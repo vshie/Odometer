@@ -32,6 +32,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 ODOMETER_CSV = DATA_DIR / 'odometer.csv'
 MAINTENANCE_CSV = DATA_DIR / 'maintenance.csv'
 STARTUP_MARKER = DATA_DIR / '.startup_marker'
+CPU_TEMP_PATH = Path('/sys/class/thermal/thermal_zone0/temp')
 
 # Define potential Mavlink endpoints to try
 MAVLINK_ENDPOINTS = [
@@ -60,6 +61,7 @@ class OdometerService:
             'battery_swaps': 0,
             'startups': 0,
             'last_voltage': 0.0,
+            'cpu_temp': 0.0,
         }
         self.last_update_time = time.time()
         self.minutes_since_update = 0
@@ -96,7 +98,7 @@ class OdometerService:
         if not ODOMETER_CSV.exists():
             with open(ODOMETER_CSV, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(['timestamp', 'total_minutes', 'armed_minutes', 'disarmed_minutes', 'battery_swaps', 'startups', 'voltage', 'time_status'])
+                writer.writerow(['timestamp', 'total_minutes', 'armed_minutes', 'disarmed_minutes', 'battery_swaps', 'startups', 'voltage', 'cpu_temp', 'time_status'])
         
         # Set up maintenance CSV file
         if not MAINTENANCE_CSV.exists():
@@ -130,6 +132,13 @@ class OdometerService:
                             self.stats['last_voltage'] = float(last_row[6])
                         else:
                             self.stats['last_voltage'] = float(last_row[5])
+                        
+                        # CPU temperature might be at index 7 if the field exists
+                        if len(last_row) > 7 and last_row[7]:
+                            try:
+                                self.stats['cpu_temp'] = float(last_row[7])
+                            except (ValueError, TypeError):
+                                self.stats['cpu_temp'] = 0.0
     
     def update_loop(self):
         """Main update loop that runs every minute"""
@@ -164,6 +173,9 @@ class OdometerService:
             # Get current voltage and armed status
             current_voltage, is_armed = self.get_vehicle_status()
             
+            # Get current CPU temperature
+            current_cpu_temp = self.get_cpu_temperature()
+            
             with self.stats_lock:
                 # Update total minutes
                 self.stats['total_minutes'] += 1  # Always add 1 minute regardless of time jump
@@ -178,8 +190,9 @@ class OdometerService:
                 if current_voltage > (self.stats['last_voltage'] + 1.0) and self.stats['last_voltage'] > 0:
                     self.stats['battery_swaps'] += 1
                 
-                # Update last voltage
+                # Update last voltage and CPU temperature
                 self.stats['last_voltage'] = current_voltage
+                self.stats['cpu_temp'] = current_cpu_temp
                 
                 # Write to CSV
                 self.write_stats_to_csv(time_status)
@@ -205,6 +218,7 @@ class OdometerService:
                 self.stats['battery_swaps'],
                 self.stats['startups'],
                 self.stats['last_voltage'],
+                self.stats['cpu_temp'],
                 time_status + (" (startup)" if startup_detected else "")
             ])
     
@@ -334,6 +348,20 @@ class OdometerService:
         
         logger.error(f"Could not send {name}={value} to any Mavlink2Rest endpoint")
         return False
+
+    def get_cpu_temperature(self) -> float:
+        """Get the current CPU temperature in Celsius"""
+        try:
+            if CPU_TEMP_PATH.exists():
+                with open(CPU_TEMP_PATH, 'r') as f:
+                    temp = float(f.read().strip()) / 1000.0  # Convert millidegrees to degrees
+                    return round(temp, 1)
+            
+            # Fallback for non-Raspberry Pi systems or if temp file doesn't exist
+            return 0.0
+        except Exception as e:
+            logger.warning(f"Failed to read CPU temperature: {e}")
+            return 0.0
 
 # Initialize the service
 odometer_service = OdometerService()

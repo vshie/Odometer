@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
+    <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BlueOS Odometer</title>
@@ -94,7 +94,7 @@
                     </v-row>
 
                     <v-row class="mt-4">
-                        <v-col cols="12" md="6">
+                        <v-col cols="12" md="4">
                             <v-card class="stat-card" elevation="4">
                                 <v-card-title class="secondary white--text">
                                     <v-icon large color="white" class="mr-2">mdi-battery-sync</v-icon>
@@ -109,7 +109,7 @@
                             </v-card>
                         </v-col>
 
-                        <v-col cols="12" md="6">
+                        <v-col cols="12" md="4">
                             <v-card class="stat-card" elevation="4">
                                 <v-card-title class="deep-purple white--text">
                                     <v-icon large color="white" class="mr-2">mdi-battery</v-icon>
@@ -120,6 +120,21 @@
                                         {{ stats.last_voltage.toFixed(2) }}V
                                     </div>
                                     <div class="caption mt-2">Current battery voltage</div>
+                                </v-card-text>
+                            </v-card>
+                        </v-col>
+
+                        <v-col cols="12" md="4">
+                            <v-card class="stat-card" elevation="4">
+                                <v-card-title class="red darken-1 white--text">
+                                    <v-icon large color="white" class="mr-2">mdi-thermometer</v-icon>
+                                    CPU Temperature
+                                </v-card-title>
+                                <v-card-text class="text-center pa-5">
+                                    <div class="number-display">
+                                        {{ stats.cpu_temp.toFixed(1) }}°C
+                                    </div>
+                                    <div class="caption mt-2">Current CPU temperature</div>
                                 </v-card-text>
                             </v-card>
                         </v-col>
@@ -134,11 +149,37 @@
                                     Vehicle Usage Distribution
                                 </v-card-title>
                                 <v-card-text class="text-center pa-5">
-                                    <div style="position: relative; height: 300px; width: 100%;">
+                                    <div style="position: relative; height: 300px; width: 100%; margin: 0 auto; max-width: 500px;">
                                         <canvas id="usageChart"></canvas>
                                     </div>
                                     <div class="caption mt-4 text-center">Proportion of time spent Armed vs Disarmed</div>
                                 </v-card-text>
+                            </v-card>
+                        </v-col>
+                    </v-row>
+
+                    <!-- Historical Chart for Voltage and Temperature -->
+                    <v-row class="mt-6">
+                        <v-col cols="12">
+                            <v-card elevation="4">
+                                <v-card-title class="teal darken-1 white--text">
+                                    <v-icon large color="white" class="mr-2">mdi-chart-line</v-icon>
+                                    Temperature & Voltage History
+                                </v-card-title>
+                                <v-card-text class="text-center pa-5">
+                                    <div style="position: relative; height: 400px; width: 100%;">
+                                        <canvas id="historyChart"></canvas>
+                                    </div>
+                                    <div class="caption mt-4 text-center">CPU Temperature and Battery Voltage over time</div>
+                                </v-card-text>
+                                <v-card-actions class="justify-center pb-4">
+                                    <v-btn-toggle v-model="timeRange" mandatory>
+                                        <v-btn value="24h">24 Hours</v-btn>
+                                        <v-btn value="7d">7 Days</v-btn>
+                                        <v-btn value="30d">30 Days</v-btn>
+                                        <v-btn value="all">All Time</v-btn>
+                                    </v-btn-toggle>
+                                </v-card-actions>
                             </v-card>
                         </v-col>
                     </v-row>
@@ -277,6 +318,8 @@
     <script src="https://cdn.jsdelivr.net/npm/vuetify@2.6.14/dist/vuetify.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/moment@2.29.4/moment.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@1.0.1/dist/chartjs-adapter-moment.min.js"></script>
     <script>
         new Vue({
             el: '#app',
@@ -288,7 +331,8 @@
                         armed_minutes: 0,
                         disarmed_minutes: 0,
                         battery_swaps: 0,
-                        last_voltage: 0.0
+                        last_voltage: 0.0,
+                        cpu_temp: 0.0
                     },
                     maintenanceLog: [],
                     maintenanceHeaders: [
@@ -308,12 +352,17 @@
                         color: 'success'
                     },
                     updateInterval: null,
-                    usageChart: null
+                    usageChart: null,
+                    historyChart: null,
+                    historicalData: [],
+                    timeRange: '24h',
+                    loading: false
                 }
             },
             mounted() {
                 this.fetchStats();
                 this.fetchMaintenanceLog();
+                this.fetchHistoricalData();
                 // Update stats every 30 seconds
                 this.updateInterval = setInterval(() => {
                     this.fetchStats();
@@ -323,6 +372,14 @@
                 clearInterval(this.updateInterval);
                 if (this.usageChart) {
                     this.usageChart.destroy();
+                }
+                if (this.historyChart) {
+                    this.historyChart.destroy();
+                }
+            },
+            watch: {
+                timeRange() {
+                    this.updateHistoryChart();
                 }
             },
             methods: {
@@ -469,7 +526,7 @@
                         };
                         
                         this.usageChart = new Chart(ctx, {
-                            type: 'pie',
+                            type: 'doughnut',
                             data: placeholderData,
                             options: this.getChartOptions(true)
                         });
@@ -488,7 +545,7 @@
                     };
                     
                     this.usageChart = new Chart(ctx, {
-                        type: 'pie',
+                        type: 'doughnut',
                         data: data,
                         options: this.getChartOptions()
                     });
@@ -497,6 +554,13 @@
                     return {
                         responsive: true,
                         maintainAspectRatio: true,
+                        animation: { duration: 500 },
+                        layout: {
+                            padding: {
+                                top: 10,
+                                bottom: 10
+                            }
+                        },
                         plugins: {
                             legend: {
                                 display: !isPlaceholder,
@@ -521,16 +585,201 @@
                                     }
                                 }
                             }
-                        },
-                        animation: {
-                            animateRotate: true,
-                            animateScale: true,
-                            duration: 500
                         }
                     };
+                },
+                fetchHistoricalData() {
+                    this.loading = true;
+                    axios.get('/download/odometer')
+                        .then(response => {
+                            if (response.data.status === 'success') {
+                                // Parse CSV data
+                                const lines = response.data.data.split('\n');
+                                const headers = lines[0].split(',');
+                                
+                                // Find indices for timestamp, voltage and cpu_temp
+                                const timestampIndex = headers.indexOf('timestamp');
+                                const voltageIndex = headers.indexOf('voltage');
+                                const cpuTempIndex = headers.indexOf('cpu_temp');
+                                
+                                // Parse data rows
+                                const data = [];
+                                for (let i = 1; i < lines.length; i++) {
+                                    if (!lines[i].trim()) continue;
+                                    
+                                    const values = lines[i].split(',');
+                                    if (values.length > Math.max(timestampIndex, voltageIndex, cpuTempIndex)) {
+                                        const timestamp = new Date(values[timestampIndex]);
+                                        let voltage = parseFloat(values[voltageIndex]);
+                                        let cpuTemp = 0;
+                                        
+                                        if (cpuTempIndex !== -1 && values[cpuTempIndex]) {
+                                            cpuTemp = parseFloat(values[cpuTempIndex]);
+                                        }
+                                        
+                                        if (!isNaN(voltage) && !isNaN(timestamp.getTime())) {
+                                            data.push({
+                                                timestamp,
+                                                voltage,
+                                                cpuTemp
+                                            });
+                                        }
+                                    }
+                                }
+                                
+                                this.historicalData = data;
+                                this.updateHistoryChart();
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Error fetching historical data:', error);
+                            this.showSnackbar('Failed to load historical data', 'error');
+                        })
+                        .finally(() => {
+                            this.loading = false;
+                        });
+                },
+                
+                updateHistoryChart() {
+                    const ctx = document.getElementById('historyChart');
+                    if (!ctx || this.historicalData.length === 0) return;
+                    
+                    // Filter data based on selected time range
+                    const now = new Date();
+                    let filteredData = [...this.historicalData];
+                    
+                    if (this.timeRange === '24h') {
+                        const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+                        filteredData = filteredData.filter(d => d.timestamp >= dayAgo);
+                    } else if (this.timeRange === '7d') {
+                        const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+                        filteredData = filteredData.filter(d => d.timestamp >= weekAgo);
+                    } else if (this.timeRange === '30d') {
+                        const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+                        filteredData = filteredData.filter(d => d.timestamp >= monthAgo);
+                    }
+                    
+                    // Sort by timestamp
+                    filteredData.sort((a, b) => a.timestamp - b.timestamp);
+                    
+                    // Prepare data for chart
+                    const labels = filteredData.map(d => d.timestamp);
+                    const voltageData = filteredData.map(d => d.voltage);
+                    const tempData = filteredData.map(d => d.cpuTemp);
+                    
+                    // Destroy previous chart if it exists
+                    if (this.historyChart) {
+                        this.historyChart.destroy();
+                        this.historyChart = null;
+                    }
+                    
+                    // Create new chart
+                    this.historyChart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [
+                                {
+                                    label: 'Battery Voltage (V)',
+                                    data: voltageData,
+                                    borderColor: '#673AB7',
+                                    backgroundColor: 'rgba(103, 58, 183, 0.1)',
+                                    borderWidth: 2,
+                                    fill: true,
+                                    tension: 0.2,
+                                    yAxisID: 'y-voltage'
+                                },
+                                {
+                                    label: 'CPU Temperature (°C)',
+                                    data: tempData,
+                                    borderColor: '#F44336',
+                                    backgroundColor: 'rgba(244, 67, 54, 0.1)',
+                                    borderWidth: 2,
+                                    fill: true,
+                                    tension: 0.2,
+                                    yAxisID: 'y-temp'
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            interaction: {
+                                mode: 'index',
+                                intersect: false
+                            },
+                            scales: {
+                                x: {
+                                    type: 'time',
+                                    time: {
+                                        unit: this.getTimeUnit(),
+                                        displayFormats: {
+                                            hour: 'MMM d, HH:mm',
+                                            day: 'MMM d',
+                                            week: 'MMM d',
+                                            month: 'MMM yyyy'
+                                        }
+                                    },
+                                    title: {
+                                        display: true,
+                                        text: 'Time'
+                                    }
+                                },
+                                'y-voltage': {
+                                    type: 'linear',
+                                    position: 'left',
+                                    title: {
+                                        display: true,
+                                        text: 'Battery Voltage (V)'
+                                    },
+                                    grid: {
+                                        drawOnChartArea: true
+                                    },
+                                    min: Math.max(0, Math.min(...voltageData) - 1),
+                                    max: Math.max(...voltageData) + 1
+                                },
+                                'y-temp': {
+                                    type: 'linear',
+                                    position: 'right',
+                                    title: {
+                                        display: true,
+                                        text: 'CPU Temperature (°C)'
+                                    },
+                                    grid: {
+                                        drawOnChartArea: false
+                                    },
+                                    min: Math.max(0, Math.min(...tempData) - 5),
+                                    max: Math.max(...tempData) + 5
+                                }
+                            },
+                            plugins: {
+                                legend: {
+                                    display: true,
+                                    position: 'top'
+                                },
+                                tooltip: {
+                                    callbacks: {
+                                        title: function(context) {
+                                            const date = new Date(context[0].parsed.x);
+                                            return date.toLocaleString();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                },
+                
+                getTimeUnit() {
+                    switch(this.timeRange) {
+                        case '24h': return 'hour';
+                        case '7d': return 'day';
+                        case '30d': return 'week';
+                        default: return 'month';
+                    }
                 }
             }
         });
-    </script>
-</body>
+        </script>
+    </body>
 </html>
