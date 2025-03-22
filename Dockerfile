@@ -28,7 +28,7 @@ LABEL permissions='\
     "7042/tcp": {}\
   },\
   "HostConfig": {\
-    "Binds":["/usr/blueos/extensions/$IMAGE_NAME/data:/app/data", "/usr/blueos/extensions/$IMAGE_NAME/logs:/app/logs"],\
+    "Binds":["/usr/blueos/extensions/odometer/data:/app/data", "/usr/blueos/extensions/$IMAGE_NAME/logs:/app/logs"],\
     "ExtraHosts": ["host.docker.internal:host-gateway"],\
     "PortBindings": {\
       "7042/tcp": [\
@@ -59,9 +59,9 @@ LABEL company='{\
 LABEL type="utility"
 ARG REPO
 ARG OWNER
-LABEL readme='https://raw.githubusercontent.com/$OWNER/$REPO/{tag}/README.md'
+LABEL readme='https://github.com/vshie/Odometer/README.md'
 LABEL links='{\
-        "source": "https://github.com/$OWNER/$REPO"\
+        "source": "https://github.com/vshie/Odometer"\
     }'
 LABEL requirements="core >= 1.1"
 
