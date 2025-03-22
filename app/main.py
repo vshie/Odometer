@@ -16,6 +16,7 @@ from litestar.controller import Controller
 from litestar.datastructures import State
 from litestar.logging import LoggingConfig
 from litestar.static_files.config import StaticFilesConfig
+from litestar.response import FileResponse
 
 # Set up logging
 logging_config = LoggingConfig(
@@ -410,24 +411,21 @@ class OdometerController(Controller):
         return {"status": "success", "data": csv_data}
     
     @get("/", sync_to_thread=False)
-    def index(self):
+    def index(self) -> FileResponse:
         """Serve the main index.html file"""
-        from litestar.response import FileResponse
         return FileResponse(path="static/index.html")
     
     @get("/register_service", sync_to_thread=False)
-    def register_service(self):
+    def register_service(self) -> FileResponse:
         """Register the extension as a service in BlueOS."""
-        from litestar.response import FileResponse
         response = FileResponse(path="static/register_service")
         # Add header to prevent BlueOS from wrapping the page
         response.headers['X-Frame-Options'] = 'ALLOWALL'
         return response
     
     @get("/{file_path:path}", sync_to_thread=False)
-    def static_files(self, file_path: str):
+    def static_files(self, file_path: str) -> FileResponse:
         """Serve static files or fall back to index.html for SPA routing"""
-        from litestar.response import FileResponse
         from pathlib import Path
         
         # First check if file exists in static directory
