@@ -1,7 +1,7 @@
 [project]
-name = "quickstart"
-version = "0.0.2"
-description = "BlueOS QuickStart Example Extension"
+name = "odometer"
+version = "0.1.0"
+description = "BlueOS Odometer Extension for tracking vehicle usage statistics"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",

@@ -1,20 +1,68 @@
-# QuickStart-Python-Extension
+# BlueOS Odometer Extension
 
-A quick-start repository for building and uploading a Python-focused BlueOS Extension.
+The BlueOS Odometer Extension tracks your vehicle's usage stats and maintenance history, providing you with valuable data about your vehicle's operational profile.
 
-## Intent
+## Features
 
-This is intended to showcase:
-1. How to make a basic Extension with a simple web interface, using Python and some HTML
-2. The difference between code running on the frontend vs the backend
-    - Backend code has access to vehicle hardware and other service APIs, as well as the filesystem (for things like persistent logging)
-    - Frontend code is in charge of the display, and runs in the browser interface (instead of on the vehicle's onboard computer)
+- **Uptime Tracking**: Counts total minutes of vehicle operation
+- **Armed/Disarmed Time**: Tracks how long your vehicle has been in armed vs. disarmed states
+- **Battery Monitoring**: Records battery voltage and detects battery swaps
+- **Maintenance Log**: Add and track repair, replacement, and maintenance events
+- **Data Export**: Download all collected data as CSV files
 
-## Usage
+## Installation
 
-Forking the repository will try to automatically package and upload your Extension variant to a Docker registry (Docker Hub), using the built in GitHub Action.
-This process makes use of some [GitHub Variables](https://github.com/BlueOS-community/Deploy-BlueOS-Extension#input-variables) that you can configure for your fork.
+Install this extension directly from the BlueOS Extensions page in your vehicle's web interface.
 
-It is also possible to manually run the Action (via the Actions tab), or to build and deploy the extension manually on your local machine (although this requires installing the relevant build tools and cloning the repository onto your computer).
+## How It Works
 
->💡**Note:** If you are forking this repository as a starting point for creating your own [BlueOS Extension](https://blueos.cloud/docs/blueos/latest/development/extensions), it is recommended to enable `Issues` in your fork (via the `Settings` tab at the top), so that users and co-developers of your Extension can raise problems and make suggestions.
+### Usage Tracking
+
+The Odometer polls the Mavlink2Rest API once per minute to:
+
+1. Increment the total uptime counter
+2. Check armed status and increment the relevant counter (armed or disarmed)
+3. Monitor battery voltage and detect battery swaps (when voltage increases by > 1V)
+4. Record all this data to a persistent CSV file
+
+### Maintenance Logging
+
+You can add maintenance records through the web interface, which will be stored in a separate CSV file. Each record includes:
+
+- Timestamp
+- Event type (Repair, Replacement, Maintenance, Inspection, Note)
+- Detailed description
+
+## Requirements
+
+- BlueOS version 1.1 or higher
+- A vehicle with a functioning Mavlink2Rest API
+
+## Development
+
+### Building from Source
+
+1. Clone this repository:
+```bash
+git clone https://github.com/yourusername/BlueOS-Odometer.git
+cd BlueOS-Odometer
+```
+
+2. Build the Docker image:
+```bash
+docker build -t blueos-odometer .
+```
+
+3. Run the container:
+```bash
+docker run -p 8000:8000 blueos-odometer
+```
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgments
+
+- BlueOS team for their excellent vehicle management platform
+- Blue Robotics for fostering the underwater robotics community
