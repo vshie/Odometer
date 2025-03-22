@@ -11,26 +11,20 @@ import threading
 import requests
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
-from litestar import Litestar, get, post, put, MediaType
-from litestar.controller import Controller
-from litestar.datastructures import State
-from litestar.logging import LoggingConfig
-from litestar.static_files.config import StaticFilesConfig
-from litestar.response import FileResponse
+from flask import Flask, jsonify, request, send_from_directory, send_file
 
 # Set up logging
-logging_config = LoggingConfig(
-    loggers={
-        __name__: dict(
-            level='INFO',
-            handlers=['queue_listener'],
-        )
-    },
-)
-
 log_dir = Path('/app/logs')
 log_dir.mkdir(parents=True, exist_ok=True)
-fh = logging.handlers.RotatingFileHandler(log_dir / 'lumber.log', maxBytes=2**16, backupCount=1)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.handlers.RotatingFileHandler(log_dir / 'lumber.log', maxBytes=2**16, backupCount=1),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # Constants
 DATA_DIR = Path('/app/data')
@@ -53,9 +47,10 @@ ARMED_FLAG = 128  # MAV_MODE_FLAG_SAFETY_ARMED (0b10000000)
 MAX_TIME_JUMP_MINUTES = 5  # Maximum acceptable time jump in minutes
 PORT = 7042  # Port to run the server on
 
-class OdometerController(Controller):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+app = Flask(__name__, static_folder='static')
+
+class OdometerService:
+    def __init__(self):
         self.stop_event = threading.Event()
         self.stats_lock = threading.Lock()
         self.stats = {
@@ -85,7 +80,7 @@ class OdometerController(Controller):
         is_new_startup = not STARTUP_MARKER.exists()
         
         if is_new_startup:
-            logging.info("Detected new vehicle startup")
+            logger.info("Detected new vehicle startup")
             with self.stats_lock:
                 self.stats['startups'] += 1
             
@@ -144,7 +139,7 @@ class OdometerController(Controller):
                 # Sleep for the update interval
                 time.sleep(UPDATE_INTERVAL)
             except Exception as e:
-                logging.error(f"Error in update loop: {e}")
+                logger.error(f"Error in update loop: {e}")
                 time.sleep(10)  # Sleep for a shorter time if there was an error
     
     def update_stats(self):
@@ -158,7 +153,7 @@ class OdometerController(Controller):
             # Calculate minutes to add based on actual time passed vs expected
             if abs(time_diff_seconds - expected_diff_seconds) > (MAX_TIME_JUMP_MINUTES * 60):
                 # A significant time jump detected, use expected time diff instead
-                logging.warning(f"Time jump detected! Diff: {time_diff_seconds/60:.2f} minutes. Using expected time interval.")
+                logger.warning(f"Time jump detected! Diff: {time_diff_seconds/60:.2f} minutes. Using expected time interval.")
                 minutes_to_add = expected_diff_seconds / 60
                 time_status = "corrected"
             else:
@@ -196,7 +191,7 @@ class OdometerController(Controller):
             self.send_stats_to_mavlink()
         
         except Exception as e:
-            logging.error(f"Error updating stats: {e}")
+            logger.error(f"Error updating stats: {e}")
     
     def write_stats_to_csv(self, time_status="normal", startup_detected=False):
         """Write the current stats to the CSV file"""
@@ -223,7 +218,7 @@ class OdometerController(Controller):
             try:
                 # Get battery voltage from SYS_STATUS message
                 sys_status_url = f"{endpoint}/SYS_STATUS"
-                logging.info(f"Trying to get SYS_STATUS from {sys_status_url}")
+                logger.info(f"Trying to get SYS_STATUS from {sys_status_url}")
                 sys_status_response = requests.get(sys_status_url, timeout=2)
                 
                 if sys_status_response.status_code == 200:
@@ -265,17 +260,17 @@ class OdometerController(Controller):
                             
                         is_armed = bool(base_mode & ARMED_FLAG)  # Check if the ARMED flag is set
                         
-                        logging.info(f"Successfully got vehicle status from {endpoint}: voltage={voltage}V, armed={is_armed}")
+                        logger.info(f"Successfully got vehicle status from {endpoint}: voltage={voltage}V, armed={is_armed}")
                         return voltage, is_armed
             
             except requests.exceptions.RequestException as e:
-                logging.warning(f"Failed to connect to mavlink endpoint {endpoint}: {e}")
+                logger.warning(f"Failed to connect to mavlink endpoint {endpoint}: {e}")
                 continue
             except Exception as e:
-                logging.warning(f"Error processing mavlink data from {endpoint}: {e}")
+                logger.warning(f"Error processing mavlink data from {endpoint}: {e}")
                 continue
         
-        logging.error(f"Could not get vehicle status from any mavlink endpoint")
+        logger.error(f"Could not get vehicle status from any mavlink endpoint")
         return voltage, is_armed
     
     def send_stats_to_mavlink(self):
@@ -328,131 +323,116 @@ class OdometerController(Controller):
             try:
                 response = requests.post(post_url, json=payload, timeout=2.0)
                 if response.status_code == 200:
-                    logging.info(f"Successfully sent {name}={value} to Mavlink2Rest via {post_url}")
+                    logger.info(f"Successfully sent {name}={value} to Mavlink2Rest via {post_url}")
                     return True
                 else:
-                    logging.warning(f"Failed to send to {post_url} with status code {response.status_code}")
+                    logger.warning(f"Failed to send to {post_url} with status code {response.status_code}")
                     continue  # Try next endpoint
             except Exception as e:
-                logging.warning(f"Failed to send {name}={value} to {post_url}: {e}")
+                logger.warning(f"Failed to send {name}={value} to {post_url}: {e}")
                 continue  # Try next endpoint
         
-        logging.error(f"Could not send {name}={value} to any Mavlink2Rest endpoint")
+        logger.error(f"Could not send {name}={value} to any Mavlink2Rest endpoint")
         return False
-    
-    @get("/stats", sync_to_thread=False)
-    def get_stats(self) -> Dict[str, Any]:
-        """Get the current odometer statistics"""
-        with self.stats_lock:
-            return {
-                "status": "success",
-                "data": self.stats
-            }
-    
-    @get("/maintenance", sync_to_thread=False)
-    def get_maintenance(self) -> Dict[str, Any]:
-        """Get the maintenance log"""
-        maintenance_records = []
-        
-        if MAINTENANCE_CSV.exists():
-            with open(MAINTENANCE_CSV, 'r', newline='') as f:
-                reader = csv.reader(f)
-                headers = next(reader)  # Skip header row
-                for row in reader:
-                    if len(row) >= 3:
-                        maintenance_records.append({
-                            "timestamp": row[0],
-                            "event_type": row[1],
-                            "details": row[2]
-                        })
-        
-        return {
+
+# Initialize the service
+odometer_service = OdometerService()
+
+@app.route('/stats')
+def get_stats():
+    """Get the current odometer statistics"""
+    with odometer_service.stats_lock:
+        return jsonify({
             "status": "success",
-            "data": maintenance_records
-        }
-    
-    @post("/maintenance")
-    async def add_maintenance(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Add a new maintenance record"""
-        event_type = data.get('event_type')
-        details = data.get('details')
-        
-        if not event_type or not details:
-            return {"status": "error", "message": "Event type and details are required"}
-        
-        timestamp = datetime.datetime.now().isoformat()
-        
-        with open(MAINTENANCE_CSV, 'a', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([timestamp, event_type, details])
-        
-        return {"status": "success", "message": "Maintenance record added"}
-    
-    @get("/download/odometer", sync_to_thread=False)
-    def download_odometer(self) -> Dict[str, Any]:
-        """Get the odometer data as CSV for download"""
-        if not ODOMETER_CSV.exists():
-            return {"status": "error", "message": "Odometer data file does not exist"}
-        
-        with open(ODOMETER_CSV, 'r') as f:
-            csv_data = f.read()
-        
-        return {"status": "success", "data": csv_data}
-    
-    @get("/download/maintenance", sync_to_thread=False)
-    def download_maintenance(self) -> Dict[str, Any]:
-        """Get the maintenance data as CSV for download"""
-        if not MAINTENANCE_CSV.exists():
-            return {"status": "error", "message": "Maintenance data file does not exist"}
-        
-        with open(MAINTENANCE_CSV, 'r') as f:
-            csv_data = f.read()
-        
-        return {"status": "success", "data": csv_data}
-    
-    @get("/", sync_to_thread=False)
-    def index(self) -> FileResponse:
-        """Serve the main index.html file"""
-        return FileResponse(path="static/index.html")
-    
-    @get("/register_service", sync_to_thread=False)
-    def register_service(self) -> FileResponse:
-        """Register the extension as a service in BlueOS."""
-        response = FileResponse(path="static/register_service")
-        # Add header to prevent BlueOS from wrapping the page
-        response.headers['X-Frame-Options'] = 'ALLOWALL'
-        return response
-    
-    @get("/{file_path:path}", sync_to_thread=False)
-    def static_files(self, file_path: str) -> FileResponse:
-        """Serve static files or fall back to index.html for SPA routing"""
-        from pathlib import Path
-        
-        # First check if file exists in static directory
-        static_file = Path(f"static/{file_path}")
-        if static_file.exists() and static_file.is_file():
-            return FileResponse(path=str(static_file))
-        
-        # If not found, try to serve index.html for SPA routing
-        return FileResponse(path="static/index.html")
+            "data": odometer_service.stats
+        })
 
-app = Litestar(
-    route_handlers=[OdometerController],
-    state=State({'bag_url':'http://host.docker.internal/bag/v1.0'}),
-    static_files_config=[
-        StaticFilesConfig(
-            directories=['static'],  # Path relative to /app where the code runs in container
-            path='/',
-            html_mode=True,
-            name="static"
-        )
-    ],
-    logging_config=logging_config,
-)
+@app.route('/maintenance')
+def get_maintenance():
+    """Get the maintenance log"""
+    maintenance_records = []
+    
+    if MAINTENANCE_CSV.exists():
+        with open(MAINTENANCE_CSV, 'r', newline='') as f:
+            reader = csv.reader(f)
+            headers = next(reader)  # Skip header row
+            for row in reader:
+                if len(row) >= 3:
+                    maintenance_records.append({
+                        "timestamp": row[0],
+                        "event_type": row[1],
+                        "details": row[2]
+                    })
+    
+    return jsonify({
+        "status": "success",
+        "data": maintenance_records
+    })
 
-app.logger.addHandler(fh)
+@app.route('/maintenance', methods=['POST'])
+def add_maintenance():
+    """Add a new maintenance record"""
+    data = request.json
+    event_type = data.get('event_type')
+    details = data.get('details')
+    
+    if not event_type or not details:
+        return jsonify({"status": "error", "message": "Event type and details are required"}), 400
+    
+    timestamp = datetime.datetime.now().isoformat()
+    
+    with open(MAINTENANCE_CSV, 'a', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([timestamp, event_type, details])
+    
+    return jsonify({"status": "success", "message": "Maintenance record added"})
+
+@app.route('/download/odometer')
+def download_odometer():
+    """Get the odometer data as CSV for download"""
+    if not ODOMETER_CSV.exists():
+        return jsonify({"status": "error", "message": "Odometer data file does not exist"}), 404
+    
+    return send_file(
+        ODOMETER_CSV,
+        mimetype='text/csv',
+        as_attachment=True,
+        download_name='odometer_data.csv'
+    )
+
+@app.route('/download/maintenance')
+def download_maintenance():
+    """Get the maintenance data as CSV for download"""
+    if not MAINTENANCE_CSV.exists():
+        return jsonify({"status": "error", "message": "Maintenance data file does not exist"}), 404
+    
+    return send_file(
+        MAINTENANCE_CSV,
+        mimetype='text/csv',
+        as_attachment=True,
+        download_name='maintenance_data.csv'
+    )
+
+@app.route('/register_service')
+def register_service():
+    """Register the extension as a service in BlueOS."""
+    response = send_from_directory('static', 'register_service')
+    # Add header to prevent BlueOS from wrapping the page
+    response.headers['X-Frame-Options'] = 'ALLOWALL'
+    return response
+
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def catch_all(path):
+    """Serve static files or fall back to index.html for SPA routing"""
+    # First check if the requested path exists in the static folder
+    static_path = os.path.join(app.static_folder, path)
+    if os.path.exists(static_path) and os.path.isfile(static_path):
+        return send_from_directory(app.static_folder, path)
+    
+    # Otherwise, serve index.html for SPA routing
+    return send_from_directory(app.static_folder, 'index.html')
 
 # If run directly, start the app
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    app.run(host="0.0.0.0", port=PORT, debug=False)

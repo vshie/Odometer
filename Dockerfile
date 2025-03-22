@@ -11,7 +11,7 @@ RUN mkdir -p /app/data /app/logs
 
 # Install Python dependencies
 RUN pip install --no-cache-dir \
-    litestar[standard]==2.12.1 \
+    flask==2.0.1 \
     requests==2.31.0 \
     --extra-index-url https://www.piwheels.org/simple
 
