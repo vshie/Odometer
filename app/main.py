@@ -50,6 +50,7 @@ MAVLINK_ENDPOINTS = [
 UPDATE_INTERVAL = 60  # Update every 60 seconds (1 minute)
 ARMED_FLAG = 128  # MAV_MODE_FLAG_SAFETY_ARMED (0b10000000)
 MAX_TIME_JUMP_MINUTES = 5  # Maximum acceptable time jump in minutes
+PORT = 7042  # Port to run the server on
 
 class OdometerController(Controller):
     def __init__(self, *args, **kwargs):
@@ -386,6 +387,12 @@ app = Litestar(
         StaticFilesConfig(directories=['app/static'], path='/', html_mode=True)
     ],
     logging_config=logging_config,
+    port=PORT,
 )
 
 app.logger.addHandler(fh)
+
+# If run directly, start the app
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
