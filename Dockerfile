@@ -9,9 +9,10 @@ COPY app /app
 # Create directories for storing data and logs
 RUN mkdir -p /app/data /app/logs
 
-# Install Python dependencies
+# Install Python dependencies with pinned versions for compatibility
 RUN pip install --no-cache-dir \
     flask==2.0.1 \
+    werkzeug==2.0.1 \
     requests==2.31.0 \
     --extra-index-url https://www.piwheels.org/simple
 
