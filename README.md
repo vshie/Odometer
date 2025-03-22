@@ -1,6 +1,6 @@
 # BlueOS Odometer Extension
 
-The BlueOS Odometer Extension tracks your vehicle's usage stats and maintenance history, providing you with valuable data about your vehicle's operational profile.
+The BlueOS Odometer Extension tracks your vehicle's usage stats and maintenance history, providing you with valuable data about your vehicle's operational life and history. When understanding failure rates and theh cost of system operations vs. time, data is key! This extension aspires to be like the odometer of your car - but perhaps easier to fiddle with! 
 
 ## Features
 
@@ -12,7 +12,7 @@ The BlueOS Odometer Extension tracks your vehicle's usage stats and maintenance 
 
 ## Installation
 
-Install this extension directly from the BlueOS Extensions page in your vehicle's web interface.
+Once launched in the Extensions Manager, install this extension directly from the Extensions page in your BlueOS web interface. Prior to that, instal with vshie/blueos-blueos-odometer as docker image and main as the branch. Use the contents of the docker-file permissions section with \ removed for  the settings. 
 
 ## How It Works
 
@@ -33,30 +33,12 @@ You can add maintenance records through the web interface, which will be stored 
 - Event type (Repair, Replacement, Maintenance, Inspection, Note)
 - Detailed description
 
+You can edit the time after creating a log entry to be when the event occured, instead of when it was recorded. 
+
 ## Requirements
 
-- BlueOS version 1.1 or higher
-- A vehicle with a functioning Mavlink2Rest API
-
-## Development
-
-### Building from Source
-
-1. Clone this repository:
-```bash
-git clone https://github.com/yourusername/BlueOS-Odometer.git
-cd BlueOS-Odometer
-```
-
-2. Build the Docker image:
-```bash
-docker build -t blueos-odometer .
-```
-
-3. Run the container:
-```bash
-docker run -p 8000:8000 blueos-odometer
-```
+- BlueOS version 1.3.1 or higher
+- OR A vehicle with a functioning Mavlink2Rest API (??)
 
 ## License
 

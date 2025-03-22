@@ -190,9 +190,10 @@ class OdometerService:
                 if current_voltage > (self.stats['last_voltage'] + 1.0) and self.stats['last_voltage'] > 0:
                     self.stats['battery_swaps'] += 1
                 
-                # Update last voltage and CPU temperature
+                # Update last voltage and CPU temperature (only if valid)
                 self.stats['last_voltage'] = current_voltage
-                self.stats['cpu_temp'] = current_cpu_temp
+                if current_cpu_temp > 0:  # Only update if we got a valid reading
+                    self.stats['cpu_temp'] = current_cpu_temp
                 
                 # Write to CSV
                 self.write_stats_to_csv(time_status)
@@ -210,6 +211,8 @@ class OdometerService:
         """Write the current stats to the CSV file"""
         with open(ODOMETER_CSV, 'a', newline='') as f:
             writer = csv.writer(f)
+            # Only write valid CPU temperature values to CSV
+            cpu_temp_value = self.stats['cpu_temp'] if self.stats['cpu_temp'] > 0 else ''
             writer.writerow([
                 datetime.datetime.now().isoformat(),
                 self.stats['total_minutes'],
@@ -218,7 +221,7 @@ class OdometerService:
                 self.stats['battery_swaps'],
                 self.stats['startups'],
                 self.stats['last_voltage'],
-                self.stats['cpu_temp'],
+                cpu_temp_value,  # Only write non-zero values
                 time_status + (" (startup)" if startup_detected else "")
             ])
     
@@ -355,13 +358,18 @@ class OdometerService:
             if CPU_TEMP_PATH.exists():
                 with open(CPU_TEMP_PATH, 'r') as f:
                     temp = float(f.read().strip()) / 1000.0  # Convert millidegrees to degrees
+                    # Validate the temperature - don't return zero or unreasonable values
+                    if temp <= 0 or temp > 125:  # Most CPUs can't exceed 125°C without damage
+                        logger.warning(f"Invalid CPU temperature reading: {temp}°C")
+                        return -1.0  # Return negative value to indicate invalid reading
                     return round(temp, 1)
             
             # Fallback for non-Raspberry Pi systems or if temp file doesn't exist
-            return 0.0
+            logger.warning("CPU temperature file not found")
+            return -1.0
         except Exception as e:
             logger.warning(f"Failed to read CPU temperature: {e}")
-            return 0.0
+            return -1.0
 
 # Initialize the service
 odometer_service = OdometerService()
@@ -502,6 +510,45 @@ def catch_all(path):
     
     # Otherwise, serve index.html for SPA routing
     return send_from_directory(app.static_folder, 'index.html')
+
+@app.route('/clear_history', methods=['POST'])
+def clear_history():
+    """Clear temperature and voltage history while preserving uptime data"""
+    try:
+        # Check if the odometer file exists
+        if not ODOMETER_CSV.exists():
+            return jsonify({"status": "error", "message": "Odometer data file does not exist"}), 404
+        
+        # Read all existing data
+        rows = []
+        with open(ODOMETER_CSV, 'r', newline='') as f:
+            reader = csv.reader(f)
+            headers = next(reader)  # Get the header row
+            rows.append(headers)  # Keep the header row
+            
+            # Process each data row
+            for row in reader:
+                if len(row) >= 8:  # Ensure the row has enough columns
+                    # Zero out voltage and CPU temp values but keep all timing data
+                    row[6] = "0.0"  # voltage
+                    if len(row) > 7:
+                        row[7] = ""  # cpu_temp
+                    rows.append(row)
+        
+        # Write back the modified data
+        with open(ODOMETER_CSV, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerows(rows)
+        
+        # Also update the current stats
+        with odometer_service.stats_lock:
+            odometer_service.stats['last_voltage'] = 0.0
+        
+        return jsonify({"status": "success", "message": "Temperature and voltage history cleared successfully"})
+    
+    except Exception as e:
+        logger.error(f"Error clearing history: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # If run directly, start the app
 if __name__ == "__main__":
