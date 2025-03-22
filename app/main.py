@@ -465,6 +465,44 @@ def update_maintenance():
         logger.error(f"Error updating maintenance record: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route('/maintenance/delete', methods=['POST'])
+def delete_maintenance():
+    """Delete an existing maintenance record"""
+    data = request.json
+    timestamp = data.get('timestamp')
+    
+    if not timestamp:
+        return jsonify({"status": "error", "message": "Timestamp is required"}), 400
+    
+    try:
+        # Read all records
+        records = []
+        with open(MAINTENANCE_CSV, 'r', newline='') as f:
+            reader = csv.reader(f)
+            headers = next(reader)  # Skip header row
+            for row in reader:
+                records.append(row)
+        
+        # Filter out the record to delete
+        original_count = len(records)
+        records = [record for record in records if record[0] != timestamp]
+        
+        # Check if we actually found and removed a record
+        if len(records) == original_count:
+            return jsonify({"status": "error", "message": "Record not found"}), 404
+        
+        # Write all remaining records back to the file
+        with open(MAINTENANCE_CSV, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(headers)  # Write header row
+            writer.writerows(records)  # Write all records
+        
+        return jsonify({"status": "success", "message": "Maintenance record deleted"})
+    
+    except Exception as e:
+        logger.error(f"Error deleting maintenance record: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route('/download/odometer')
 def download_odometer():
     """Get the odometer data as CSV for download"""

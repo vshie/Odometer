@@ -149,7 +149,7 @@
                                     Vehicle Usage Distribution
                                 </v-card-title>
                                 <v-card-text class="text-center pa-5">
-                                    <div style="position: relative; height: 180px; width: 100%; margin: 0 auto; max-width: 400px; z-index: 1; padding: 10px 0;">
+                                    <div style="position: relative; height: 140px; width: 100%; margin: 0 auto; max-width: 350px; z-index: 1; padding: 0;">
                                         <canvas id="usageChart"></canvas>
                                     </div>
                                     <div class="caption mt-4 text-center">Proportion of time spent Armed vs Disarmed</div>
@@ -249,8 +249,11 @@
                                                     </v-chip>
                                                 </template>
                                                 <template v-slot:item.actions="{ item }">
-                                                    <v-icon small @click="openEditDialog(item)">
+                                                    <v-icon small class="mr-2" @click="openEditDialog(item)">
                                                         mdi-pencil
+                                                    </v-icon>
+                                                    <v-icon small color="error" @click="openDeleteDialog(item)">
+                                                        mdi-delete
                                                     </v-icon>
                                                 </template>
                                             </v-data-table>
@@ -343,6 +346,66 @@
                                 <v-spacer></v-spacer>
                                 <v-btn color="blue darken-1" text @click="editDialog.show = false">Cancel</v-btn>
                                 <v-btn color="blue darken-1" text @click="saveEditedRecord">Save</v-btn>
+                            </v-card-actions>
+                        </v-card>
+                    </v-dialog>
+
+                    <!-- Delete Maintenance Dialog -->
+                    <v-dialog v-model="deleteDialog.show" max-width="500px">
+                        <v-card>
+                            <v-card-title class="error white--text">
+                                <span>Delete Maintenance Record</span>
+                            </v-card-title>
+                            <v-card-text class="pt-4">
+                                <p class="text-body-1">
+                                    <v-icon color="warning" class="mr-2">mdi-alert</v-icon>
+                                    Are you sure you want to delete this maintenance record?
+                                </p>
+                                <v-list-item v-if="deleteDialog.item" two-line class="my-2 pa-2" outlined>
+                                    <v-list-item-content>
+                                        <v-list-item-title>
+                                            <v-chip :color="getEventTypeColor(deleteDialog.item.event_type)" dark>
+                                                {{ deleteDialog.item.event_type }}
+                                            </v-chip>
+                                        </v-list-item-title>
+                                        <v-list-item-subtitle class="mt-1">
+                                            <strong>{{ formatDate(deleteDialog.item.timestamp) }}</strong>
+                                        </v-list-item-subtitle>
+                                        <v-list-item-subtitle class="mt-1 text-wrap">
+                                            {{ deleteDialog.item.details }}
+                                        </v-list-item-subtitle>
+                                    </v-list-item-content>
+                                </v-list-item>
+                                <v-checkbox
+                                    v-if="deleteDialog.step === 1"
+                                    v-model="deleteDialog.confirmed"
+                                    label="I understand this action cannot be undone"
+                                    class="mt-4"
+                                ></v-checkbox>
+                                <v-alert
+                                    v-if="deleteDialog.step === 2"
+                                    type="warning"
+                                    class="mt-4"
+                                >
+                                    This is your final confirmation. This record will be permanently deleted.
+                                </v-alert>
+                            </v-card-text>
+                            <v-card-actions>
+                                <v-spacer></v-spacer>
+                                <v-btn color="blue-grey darken-1" text @click="cancelDeleteDialog">Cancel</v-btn>
+                                <v-btn 
+                                    v-if="deleteDialog.step === 1"
+                                    color="error" 
+                                    text 
+                                    :disabled="!deleteDialog.confirmed" 
+                                    @click="deleteDialog.step = 2"
+                                >Continue</v-btn>
+                                <v-btn 
+                                    v-if="deleteDialog.step === 2"
+                                    color="error" 
+                                    text 
+                                    @click="deleteMaintenanceRecord"
+                                >Confirm Delete</v-btn>
                             </v-card-actions>
                         </v-card>
                     </v-dialog>
@@ -473,6 +536,12 @@
                         show: false,
                         step: 1,
                         confirmed: false
+                    },
+                    deleteDialog: {
+                        show: false,
+                        step: 1,
+                        confirmed: false,
+                        item: null
                     }
                 }
             },
@@ -831,13 +900,13 @@
                 getChartOptions(isPlaceholder = false) {
                     return {
                         responsive: true,
-                        maintainAspectRatio: true,
+                        maintainAspectRatio: false,
                         animation: { duration: 500 },
-                        cutout: '50%',
+                        cutout: '60%',
                         layout: {
                             padding: {
-                                top: 5,
-                                bottom: 5,
+                                top: 0,
+                                bottom: 0,
                                 left: 0,
                                 right: 0
                             }
@@ -845,14 +914,14 @@
                         plugins: {
                             legend: {
                                 display: !isPlaceholder,
-                                position: 'bottom',
+                                position: 'right',
                                 labels: {
-                                    padding: 10,
+                                    padding: 5,
                                     color: this.isDarkMode ? '#ffffff' : '#666666',
                                     font: {
-                                        size: 12
+                                        size: 11
                                     },
-                                    boxWidth: 12
+                                    boxWidth: 10
                                 }
                             },
                             tooltip: {
@@ -904,10 +973,14 @@
                                     if (values.length > Math.max(timestampIndex, voltageIndex, cpuTempIndex)) {
                                         const timestamp = new Date(values[timestampIndex]);
                                         let voltage = parseFloat(values[voltageIndex]);
-                                        let cpuTemp = 0;
                                         
-                                        if (cpuTempIndex !== -1 && values[cpuTempIndex]) {
-                                            cpuTemp = parseFloat(values[cpuTempIndex]);
+                                        // Completely skip temperature readings that are missing, zero, or invalid
+                                        let cpuTemp = null;
+                                        if (cpuTempIndex !== -1 && values[cpuTempIndex] && values[cpuTempIndex].trim() !== '') {
+                                            const tempValue = parseFloat(values[cpuTempIndex]);
+                                            if (!isNaN(tempValue) && tempValue > 0) {
+                                                cpuTemp = tempValue;
+                                            }
                                         }
                                         
                                         if (!isNaN(voltage) && !isNaN(timestamp.getTime())) {
@@ -985,7 +1058,12 @@
                         // Prepare data for chart
                         const labels = filteredData.map(d => d.timestamp);
                         const voltageData = filteredData.map(d => d.voltage);
-                        const tempData = filteredData.map(d => d.cpuTemp);
+                        
+                        // Create a completely separate array of valid temperature data points
+                        // This ensures that only points with valid temperature readings are plotted
+                        const validTempPoints = filteredData
+                            .filter(d => d.cpuTemp !== null)
+                            .map(d => ({ x: d.timestamp, y: d.cpuTemp }));
                         
                         // Theme-aware grid and text colors
                         const textColor = this.isDarkMode ? '#ffffff' : '#666666';
@@ -995,7 +1073,9 @@
                             // Update existing chart with minimal redraw
                             this.historyChart.data.labels = labels;
                             this.historyChart.data.datasets[0].data = voltageData;
-                            this.historyChart.data.datasets[1].data = tempData;
+                            
+                            // Use the valid temperature points
+                            this.historyChart.data.datasets[1].data = validTempPoints;
                             
                             // Update y-axis scales
                             if (voltageData.length > 0) {
@@ -1003,9 +1083,11 @@
                                 this.historyChart.options.scales['y-voltage'].max = Math.max(...voltageData) + 1;
                             }
                             
-                            if (tempData.length > 0) {
-                                this.historyChart.options.scales['y-temp'].min = Math.max(0, Math.min(...tempData) - 5);
-                                this.historyChart.options.scales['y-temp'].max = Math.max(...tempData) + 5;
+                            // Update temperature scales only if we have valid temps
+                            if (validTempPoints.length > 0) {
+                                const tempValues = validTempPoints.map(p => p.y);
+                                this.historyChart.options.scales['y-temp'].min = Math.max(0, Math.min(...tempValues) - 5);
+                                this.historyChart.options.scales['y-temp'].max = Math.max(...tempValues) + 5;
                             }
                             
                             // Update colors for dark/light mode
@@ -1019,6 +1101,17 @@
                             // Use zero duration to avoid animation
                             this.historyChart.update(0);
                         } else {
+                            // Set initial min/max for temperature scale
+                            let tempMin = 20;  // Default min temperature
+                            let tempMax = 60;  // Default max temperature
+                            
+                            // If we have valid temperature points, use them
+                            if (validTempPoints.length > 0) {
+                                const tempValues = validTempPoints.map(p => p.y);
+                                tempMin = Math.max(0, Math.min(...tempValues) - 5);
+                                tempMax = Math.max(...tempValues) + 5;
+                            }
+                            
                             // Create new chart
                             this.historyChart = new Chart(ctx, {
                                 type: 'line',
@@ -1037,13 +1130,17 @@
                                         },
                                         {
                                             label: 'CPU Temperature (°C)',
-                                            data: tempData,
+                                            data: validTempPoints,
                                             borderColor: '#F44336',
                                             backgroundColor: 'rgba(244, 67, 54, 0.1)',
                                             borderWidth: 2,
                                             fill: true,
                                             tension: 0.2,
-                                            yAxisID: 'y-temp'
+                                            yAxisID: 'y-temp',
+                                            // Tell Chart.js that we're using x,y format for data points
+                                            parsing: true,
+                                            // Always span gaps between valid data points
+                                            spanGaps: true
                                         }
                                     ]
                                 },
@@ -1113,8 +1210,8 @@
                                                 text: 'CPU Temperature (°C)',
                                                 color: textColor
                                             },
-                                            min: Math.max(0, Math.min(...tempData) - 5),
-                                            max: Math.max(...tempData) + 5
+                                            min: tempMin,
+                                            max: tempMax
                                         }
                                     },
                                     plugins: {
@@ -1130,6 +1227,29 @@
                                                 title: function(context) {
                                                     const date = new Date(context[0].parsed.x);
                                                     return date.toLocaleString();
+                                                },
+                                                label: function(context) {
+                                                    // Handle temperature dataset which uses x,y format
+                                                    if (context.dataset.label.includes('Temperature')) {
+                                                        // Only show if we have valid data
+                                                        if (context.raw && context.raw.y > 0) {
+                                                            return `CPU Temperature: ${context.raw.y.toFixed(1)}°C`;
+                                                        }
+                                                        return null;
+                                                    }
+                                                    
+                                                    // Handle voltage dataset normally
+                                                    let label = context.dataset.label || '';
+                                                    if (label) {
+                                                        label += ': ';
+                                                    }
+                                                    if (context.parsed.y !== null) {
+                                                        label += context.parsed.y.toFixed(1);
+                                                        if (context.dataset.label.includes('Voltage')) {
+                                                            label += 'V';
+                                                        }
+                                                    }
+                                                    return label;
                                                 }
                                             }
                                         }
@@ -1240,6 +1360,45 @@
                         this.clearDialog.step = 1;
                         this.clearDialog.confirmed = false;
                     }, 300);
+                },
+                openDeleteDialog(item) {
+                    this.deleteDialog.item = item;
+                    this.deleteDialog.show = true;
+                },
+                cancelDeleteDialog() {
+                    this.deleteDialog.show = false;
+                    this.resetDeleteDialog();
+                },
+                resetDeleteDialog() {
+                    // Reset dialog state after closing
+                    setTimeout(() => {
+                        this.deleteDialog.step = 1;
+                        this.deleteDialog.confirmed = false;
+                        this.deleteDialog.item = null;
+                    }, 300);
+                },
+                deleteMaintenanceRecord() {
+                    if (!this.deleteDialog.item) return;
+                    
+                    axios.post('/maintenance/delete', {
+                        timestamp: this.deleteDialog.item.timestamp
+                    })
+                    .then(response => {
+                        if (response.data.status === 'success') {
+                            this.showSnackbar('Maintenance record deleted successfully');
+                            this.fetchMaintenanceLog();
+                        } else {
+                            this.showSnackbar(response.data.message || 'Failed to delete record', 'error');
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error deleting maintenance record:', error);
+                        this.showSnackbar('Failed to delete record', 'error');
+                    })
+                    .finally(() => {
+                        this.deleteDialog.show = false;
+                        this.resetDeleteDialog();
+                    });
                 }
             }
         });
