@@ -65,4 +65,4 @@ LABEL links='{\
 LABEL requirements="core >= 1.1"
 
 WORKDIR /app
-ENTRYPOINT ["litestar", "run", "--host", "0.0.0.0", "--port", "7042"]
+ENTRYPOINT ["python", "main.py"]

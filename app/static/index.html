@@ -125,6 +125,22 @@
                         </v-col>
                     </v-row>
 
+                    <!-- Pie Chart for Armed/Disarmed Time -->
+                    <v-row class="mt-6">
+                        <v-col cols="12" md="8" offset-md="2">
+                            <v-card elevation="4">
+                                <v-card-title class="blue-grey white--text">
+                                    <v-icon large color="white" class="mr-2">mdi-chart-pie</v-icon>
+                                    Vehicle Usage Distribution
+                                </v-card-title>
+                                <v-card-text class="text-center pa-5">
+                                    <canvas id="usageChart" height="300"></canvas>
+                                    <div class="caption mt-4 text-center">Proportion of time spent Armed vs Disarmed</div>
+                                </v-card-text>
+                            </v-card>
+                        </v-col>
+                    </v-row>
+
                     <!-- Data Export Section -->
                     <v-row class="mt-6">
                         <v-col cols="12">
@@ -258,6 +274,7 @@
     <script src="https://cdn.jsdelivr.net/npm/vue@2.6.14/dist/vue.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/vuetify@2.6.14/dist/vuetify.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
     <script>
         new Vue({
             el: '#app',
@@ -288,7 +305,8 @@
                         text: '',
                         color: 'success'
                     },
-                    updateInterval: null
+                    updateInterval: null,
+                    usageChart: null
                 }
             },
             mounted() {
@@ -301,6 +319,9 @@
             },
             beforeDestroy() {
                 clearInterval(this.updateInterval);
+                if (this.usageChart) {
+                    this.usageChart.destroy();
+                }
             },
             methods: {
                 fetchStats() {
@@ -308,6 +329,7 @@
                         .then(response => {
                             if (response.data.status === 'success') {
                                 this.stats = response.data.data;
+                                this.updateUsageChart();
                             }
                         })
                         .catch(error => {
@@ -421,6 +443,93 @@
                     this.snackbar.text = text;
                     this.snackbar.color = color;
                     this.snackbar.show = true;
+                },
+                updateUsageChart() {
+                    const ctx = document.getElementById('usageChart');
+                    const armedMinutes = this.stats.armed_minutes || 0;
+                    const disarmedMinutes = this.stats.disarmed_minutes || 0;
+                    
+                    // If no data or zero total, show placeholder
+                    if (armedMinutes === 0 && disarmedMinutes === 0) {
+                        const placeholderData = {
+                            labels: ['No Data Available'],
+                            datasets: [{
+                                data: [1],
+                                backgroundColor: ['#e0e0e0'],
+                                borderWidth: 0
+                            }]
+                        };
+                        
+                        if (this.usageChart) {
+                            this.usageChart.data = placeholderData;
+                            this.usageChart.update();
+                        } else {
+                            this.usageChart = new Chart(ctx, {
+                                type: 'pie',
+                                data: placeholderData,
+                                options: this.getChartOptions(true)
+                            });
+                        }
+                        return;
+                    }
+                    
+                    // Prepare real data
+                    const data = {
+                        labels: ['Armed Time', 'Disarmed Time'],
+                        datasets: [{
+                            data: [armedMinutes, disarmedMinutes],
+                            backgroundColor: ['#4CAF50', '#FFC107'],
+                            borderWidth: 2,
+                            borderColor: '#fff'
+                        }]
+                    };
+                    
+                    if (this.usageChart) {
+                        this.usageChart.data = data;
+                        this.usageChart.options = this.getChartOptions();
+                        this.usageChart.update();
+                    } else {
+                        this.usageChart = new Chart(ctx, {
+                            type: 'pie',
+                            data: data,
+                            options: this.getChartOptions()
+                        });
+                    }
+                },
+                getChartOptions(isPlaceholder = false) {
+                    return {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: !isPlaceholder,
+                                position: 'bottom',
+                                labels: {
+                                    padding: 20,
+                                    font: {
+                                        size: 14
+                                    }
+                                }
+                            },
+                            tooltip: {
+                                enabled: !isPlaceholder,
+                                callbacks: {
+                                    label: (context) => {
+                                        const label = context.label || '';
+                                        const value = context.raw || 0;
+                                        const total = context.dataset.data.reduce((acc, curr) => acc + curr, 0);
+                                        const percentage = ((value / total) * 100).toFixed(1);
+                                        const formattedTime = this.formatTime(value);
+                                        return `${label}: ${formattedTime} (${percentage}%)`;
+                                    }
+                                }
+                            }
+                        },
+                        animation: {
+                            animateRotate: true,
+                            animateScale: true
+                        }
+                    };
                 }
             }
         });
