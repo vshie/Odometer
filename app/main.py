@@ -415,6 +415,48 @@ def add_maintenance():
     
     return jsonify({"status": "success", "message": "Maintenance record added"})
 
+@app.route('/maintenance/update', methods=['POST'])
+def update_maintenance():
+    """Update an existing maintenance record timestamp"""
+    data = request.json
+    original_timestamp = data.get('original_timestamp')
+    new_timestamp = data.get('new_timestamp')
+    
+    if not original_timestamp or not new_timestamp:
+        return jsonify({"status": "error", "message": "Original and new timestamps are required"}), 400
+    
+    try:
+        # Read all records
+        records = []
+        with open(MAINTENANCE_CSV, 'r', newline='') as f:
+            reader = csv.reader(f)
+            headers = next(reader)  # Skip header row
+            for row in reader:
+                records.append(row)
+        
+        # Find and update the matching record
+        updated = False
+        for record in records:
+            if record[0] == original_timestamp:
+                record[0] = new_timestamp
+                updated = True
+                break
+        
+        if not updated:
+            return jsonify({"status": "error", "message": "Record not found"}), 404
+        
+        # Write all records back to the file
+        with open(MAINTENANCE_CSV, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(headers)  # Write header row
+            writer.writerows(records)  # Write all records
+        
+        return jsonify({"status": "success", "message": "Maintenance record updated"})
+    
+    except Exception as e:
+        logger.error(f"Error updating maintenance record: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route('/download/odometer')
 def download_odometer():
     """Get the odometer data as CSV for download"""
