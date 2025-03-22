@@ -40,11 +40,11 @@ STARTUP_MARKER = DATA_DIR / '.startup_marker'
 
 # Define potential Mavlink endpoints to try
 MAVLINK_ENDPOINTS = [
-    'http://host.docker.internal:6040/v1/mavlink',  # This one works, move to first position
-    'http://host.docker.internal:4777/mavlink',
-    'http://localhost:4777/mavlink',
-    'http://127.0.0.1:4777/mavlink',
-    'http://blueos.local:4777/mavlink'
+    'http://host.docker.internal/mavlink2rest/mavlink/vehicles/1/components/1/messages',  # Primary endpoint
+    'http://host.docker.internal:6040/v1/mavlink',  # Backup endpoint
+    'http://192.168.2.2/mavlink2rest/mavlink/vehicles/1/components/1/messages',  # Standard BlueOS IP
+    'http://localhost/mavlink2rest/mavlink/vehicles/1/components/1/messages',
+    'http://blueos.local/mavlink2rest/mavlink/vehicles/1/components/1/messages'
 ]
 
 UPDATE_INTERVAL = 60  # Update every 60 seconds (1 minute)
@@ -226,8 +226,20 @@ class OdometerController(Controller):
                 sys_status_response = requests.get(sys_status_url, timeout=2)
                 
                 if sys_status_response.status_code == 200:
-                    sys_status = sys_status_response.json().get("message", {})
-                    voltage = sys_status.get("voltage_battery", 0) / 1000.0  # Convert from mV to V
+                    # The structure depends on which endpoint we're using
+                    sys_status_data = sys_status_response.json()
+                    
+                    # Try to handle different response formats
+                    if 'message' in sys_status_data:
+                        sys_status = sys_status_data.get("message", {})
+                    else:
+                        sys_status = sys_status_data
+                        
+                    # Extract voltage, which might be in different fields depending on the endpoint
+                    if 'voltage_battery' in sys_status:
+                        voltage = sys_status.get("voltage_battery", 0) / 1000.0  # Convert from mV to V
+                    elif 'voltages' in sys_status and len(sys_status.get('voltages', [])) > 0:
+                        voltage = sys_status.get('voltages')[0] / 1000.0
                     
                     # Get armed status from HEARTBEAT message
                     heartbeat_url = f"{endpoint}/HEARTBEAT"
@@ -236,7 +248,12 @@ class OdometerController(Controller):
                     if heartbeat_response.status_code == 200:
                         # Parse out the nested structure according to documentation
                         heartbeat_data = heartbeat_response.json()
-                        heartbeat = heartbeat_data.get("message", {})
+                        
+                        # Try to handle different response formats
+                        if 'message' in heartbeat_data:
+                            heartbeat = heartbeat_data.get("message", {})
+                        else:
+                            heartbeat = heartbeat_data
                         
                         # Handle the nested structure - base_mode is an object with a 'bits' field
                         base_mode_obj = heartbeat.get("base_mode", {})
@@ -297,20 +314,23 @@ class OdometerController(Controller):
             }
         }
         
-        # Try each POST endpoint
-        for endpoint in MAVLINK_ENDPOINTS:
+        # Try each POST endpoint - for the new endpoint structure, we need different URLs
+        post_endpoints = [
+            'http://host.docker.internal/mavlink2rest/mavlink', # Primary endpoint
+            'http://host.docker.internal:6040/v1/mavlink',      # Backup endpoint
+            'http://192.168.2.2/mavlink2rest/mavlink',          # Standard BlueOS IP
+            'http://localhost/mavlink2rest/mavlink',
+            'http://blueos.local/mavlink2rest/mavlink'
+        ]
+        
+        for post_url in post_endpoints:
             try:
-                # For POST endpoints, we need to adjust the URL format
-                if '/v1/mavlink' in endpoint:
-                    post_url = endpoint  # Already in the right format for POST
-                else:
-                    post_url = endpoint.replace('/mavlink', '') # Strip /mavlink from the path
-                
                 response = requests.post(post_url, json=payload, timeout=2.0)
                 if response.status_code == 200:
                     logging.info(f"Successfully sent {name}={value} to Mavlink2Rest via {post_url}")
                     return True
                 else:
+                    logging.warning(f"Failed to send to {post_url} with status code {response.status_code}")
                     continue  # Try next endpoint
             except Exception as e:
                 logging.warning(f"Failed to send {name}={value} to {post_url}: {e}")
@@ -388,6 +408,35 @@ class OdometerController(Controller):
             csv_data = f.read()
         
         return {"status": "success", "data": csv_data}
+    
+    @get("/", sync_to_thread=False)
+    def index(self):
+        """Serve the main index.html file"""
+        from litestar.response import FileResponse
+        return FileResponse(path="static/index.html")
+    
+    @get("/register_service", sync_to_thread=False)
+    def register_service(self):
+        """Register the extension as a service in BlueOS."""
+        from litestar.response import FileResponse
+        response = FileResponse(path="static/register_service")
+        # Add header to prevent BlueOS from wrapping the page
+        response.headers['X-Frame-Options'] = 'ALLOWALL'
+        return response
+    
+    @get("/{file_path:path}", sync_to_thread=False)
+    def static_files(self, file_path: str):
+        """Serve static files or fall back to index.html for SPA routing"""
+        from litestar.response import FileResponse
+        from pathlib import Path
+        
+        # First check if file exists in static directory
+        static_file = Path(f"static/{file_path}")
+        if static_file.exists() and static_file.is_file():
+            return FileResponse(path=str(static_file))
+        
+        # If not found, try to serve index.html for SPA routing
+        return FileResponse(path="static/index.html")
 
 app = Litestar(
     route_handlers=[OdometerController],
@@ -402,35 +451,6 @@ app = Litestar(
     ],
     logging_config=logging_config,
 )
-
-# Add a default route handler to serve index.html explicitly
-@app.get("/")
-def index():
-    from litestar.response import FileResponse
-    return FileResponse(path="static/index.html")
-
-# Add endpoint for BlueOS service registration
-@app.get("/register_service")
-def register_service():
-    from litestar.response import FileResponse
-    response = FileResponse(path="static/register_service")
-    # Add header to prevent BlueOS from wrapping the page
-    response.headers['X-Frame-Options'] = 'ALLOWALL'
-    return response
-
-# Add a catch-all route for static files
-@app.get("/{file_path:path}")
-def static_files(file_path: str):
-    from litestar.response import FileResponse
-    from pathlib import Path
-    
-    # First check if file exists in static directory
-    static_file = Path(f"static/{file_path}")
-    if static_file.exists() and static_file.is_file():
-        return FileResponse(path=str(static_file))
-    
-    # If not found, try to serve index.html for SPA routing
-    return FileResponse(path="static/index.html")
 
 app.logger.addHandler(fh)
 
