@@ -36,7 +36,7 @@
 </head>
 <body>
     <div id="app">
-        <v-app>
+        <v-app :theme="isDarkMode ? 'dark' : 'light'">
             <v-main>
                 <v-container fluid>
                     <v-row>
@@ -365,9 +365,14 @@
     <script>
         new Vue({
             el: '#app',
-            vuetify: new Vuetify(),
+            vuetify: new Vuetify({
+                theme: {
+                    dark: window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+                }
+            }),
             data() {
                 return {
+                    isDarkMode: window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches,
                     stats: {
                         total_minutes: 0,
                         armed_minutes: 0,
@@ -405,20 +410,38 @@
                         item: null,
                         date: '',
                         time: ''
-                    }
+                    },
+                    updateCount: 0,
+                    themeMediaQuery: null
                 }
             },
             mounted() {
                 this.fetchStats();
                 this.fetchMaintenanceLog();
                 this.fetchHistoricalData();
-                // Update stats every 30 seconds
+                
+                // Update stats every 30 seconds, but only if tab is visible
                 this.updateInterval = setInterval(() => {
-                    this.fetchStats();
+                    if (!document.hidden) {
+                        this.fetchStats();
+                        // Only update historical data every 2 minutes (4 cycles)
+                        if (this.updateCount % 4 === 0) {
+                            this.fetchHistoricalData();
+                        }
+                        this.updateCount++;
+                    }
                 }, 30000);
+
+                // Listen for theme changes
+                this.setupThemeDetection();
             },
             beforeDestroy() {
                 clearInterval(this.updateInterval);
+                // Remove theme change listeners
+                if (this.themeMediaQuery) {
+                    this.themeMediaQuery.removeEventListener('change', this.handleThemeChange);
+                }
+                // Cleanup charts
                 if (this.usageChart) {
                     this.usageChart.destroy();
                 }
@@ -432,6 +455,52 @@
                 }
             },
             methods: {
+                setupThemeDetection() {
+                    // Try to detect BlueOS theme first through parent window
+                    try {
+                        if (window.parent && window.parent.document) {
+                            const parentHasTheme = window.parent.document.body.classList.contains('theme--dark');
+                            if (parentHasTheme) {
+                                this.isDarkMode = true;
+                                console.log('Detected BlueOS dark theme from parent window');
+                            }
+                        }
+                    } catch (e) {
+                        console.log('Unable to access parent frame, using system preference');
+                    }
+
+                    // Setup media query listener for system theme changes
+                    this.themeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+                    this.themeMediaQuery.addEventListener('change', this.handleThemeChange);
+                },
+                handleThemeChange(e) {
+                    this.isDarkMode = e.matches;
+                    this.$vuetify.theme.dark = this.isDarkMode;
+                    this.updateChartsTheme();
+                },
+                updateChartsTheme() {
+                    // Update chart colors based on theme
+                    if (this.historyChart) {
+                        // Update grid and text colors
+                        const textColor = this.isDarkMode ? '#ffffff' : '#666666';
+                        const gridColor = this.isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
+                        
+                        this.historyChart.options.scales.x.grid.color = gridColor;
+                        this.historyChart.options.scales.x.ticks.color = textColor;
+                        this.historyChart.options.scales['y-voltage'].grid.color = gridColor;
+                        this.historyChart.options.scales['y-voltage'].ticks.color = textColor;
+                        this.historyChart.options.scales['y-temp'].grid.color = gridColor;
+                        this.historyChart.options.scales['y-temp'].ticks.color = textColor;
+                        
+                        this.historyChart.update();
+                    }
+                    
+                    if (this.usageChart) {
+                        // Update legend colors
+                        this.usageChart.options.plugins.legend.labels.color = this.isDarkMode ? '#ffffff' : '#666666';
+                        this.usageChart.update();
+                    }
+                },
                 fetchStats() {
                     axios.get('/stats')
                         .then(response => {
@@ -547,7 +616,7 @@
                             labels: ['No Data Available'],
                             datasets: [{
                                 data: [1],
-                                backgroundColor: ['#e0e0e0'],
+                                backgroundColor: [this.isDarkMode ? '#424242' : '#e0e0e0'],
                                 borderWidth: 0
                             }]
                         };
@@ -567,7 +636,7 @@
                             data: [armedMinutes, disarmedMinutes],
                             backgroundColor: ['#4CAF50', '#FFC107'],
                             borderWidth: 2,
-                            borderColor: '#fff'
+                            borderColor: this.isDarkMode ? '#424242' : '#fff'
                         }]
                     };
                     
@@ -595,6 +664,7 @@
                                 position: 'bottom',
                                 labels: {
                                     padding: 10,
+                                    color: this.isDarkMode ? '#ffffff' : '#666666',
                                     font: {
                                         size: 12
                                     }
@@ -618,17 +688,27 @@
                 },
                 fetchHistoricalData() {
                     this.loading = true;
-                    axios.get('/download/odometer')
-                        .then(response => {
-                            if (response.data.status === 'success') {
-                                // Parse CSV data
-                                const lines = response.data.data.split('\n');
+                    
+                    // Use a direct XMLHttpRequest approach for better CSV handling
+                    const xhr = new XMLHttpRequest();
+                    xhr.open('GET', '/download/odometer', true);
+                    xhr.responseType = 'text';
+                    
+                    xhr.onload = () => {
+                        if (xhr.status === 200) {
+                            try {
+                                const csvData = xhr.responseText;
+                                const lines = csvData.split('\n');
                                 const headers = lines[0].split(',');
                                 
                                 // Find indices for timestamp, voltage and cpu_temp
                                 const timestampIndex = headers.indexOf('timestamp');
                                 const voltageIndex = headers.indexOf('voltage');
                                 const cpuTempIndex = headers.indexOf('cpu_temp');
+                                
+                                if (timestampIndex === -1 || voltageIndex === -1) {
+                                    throw new Error('Required columns not found in CSV data');
+                                }
                                 
                                 // Parse data rows
                                 const data = [];
@@ -657,155 +737,237 @@
                                 
                                 this.historicalData = data;
                                 this.updateHistoryChart();
+                            } catch (e) {
+                                console.error('Error parsing CSV data:', e);
+                                this.showSnackbar('Error parsing CSV data: ' + e.message, 'error');
                             }
-                        })
-                        .catch(error => {
-                            console.error('Error fetching historical data:', error);
+                        } else {
+                            console.error('Failed to load CSV data:', xhr.status, xhr.statusText);
                             this.showSnackbar('Failed to load historical data', 'error');
-                        })
-                        .finally(() => {
-                            this.loading = false;
-                        });
+                        }
+                        this.loading = false;
+                    };
+                    
+                    xhr.onerror = () => {
+                        console.error('Network error while fetching CSV data');
+                        this.showSnackbar('Network error while fetching data', 'error');
+                        this.loading = false;
+                    };
+                    
+                    xhr.send();
                 },
                 
                 updateHistoryChart() {
                     const ctx = document.getElementById('historyChart');
                     if (!ctx || this.historicalData.length === 0) return;
                     
-                    // Filter data based on selected time range
-                    const now = new Date();
-                    let filteredData = [...this.historicalData];
-                    
-                    if (this.timeRange === '15m') {
-                        const minutesAgo = new Date(now.getTime() - 15 * 60 * 1000);
-                        filteredData = filteredData.filter(d => d.timestamp >= minutesAgo);
-                    } else if (this.timeRange === '24h') {
-                        const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-                        filteredData = filteredData.filter(d => d.timestamp >= dayAgo);
-                    } else if (this.timeRange === '7d') {
-                        const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-                        filteredData = filteredData.filter(d => d.timestamp >= weekAgo);
-                    } else if (this.timeRange === '30d') {
-                        const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-                        filteredData = filteredData.filter(d => d.timestamp >= monthAgo);
-                    }
-                    
-                    // Sort by timestamp
-                    filteredData.sort((a, b) => a.timestamp - b.timestamp);
-                    
-                    // Ensure we have some data - if not, display a placeholder or message
-                    if (filteredData.length === 0) {
-                        // If no data for selected time range, create placeholder chart or show message
-                        this.showSnackbar('No data available for selected time range', 'info');
-                        return;
-                    }
-                    
-                    // Prepare data for chart
-                    const labels = filteredData.map(d => d.timestamp);
-                    const voltageData = filteredData.map(d => d.voltage);
-                    const tempData = filteredData.map(d => d.cpuTemp);
-                    
-                    // Destroy previous chart if it exists
-                    if (this.historyChart) {
-                        this.historyChart.destroy();
-                        this.historyChart = null;
-                    }
-                    
-                    // Create new chart
-                    this.historyChart = new Chart(ctx, {
-                        type: 'line',
-                        data: {
-                            labels: labels,
-                            datasets: [
-                                {
-                                    label: 'Battery Voltage (V)',
-                                    data: voltageData,
-                                    borderColor: '#673AB7',
-                                    backgroundColor: 'rgba(103, 58, 183, 0.1)',
-                                    borderWidth: 2,
-                                    fill: true,
-                                    tension: 0.2,
-                                    yAxisID: 'y-voltage'
+                    try {
+                        // Filter data based on selected time range
+                        const now = new Date();
+                        let filteredData = [...this.historicalData];
+                        
+                        if (this.timeRange === '15m') {
+                            const minutesAgo = new Date(now.getTime() - 15 * 60 * 1000);
+                            filteredData = filteredData.filter(d => d.timestamp >= minutesAgo);
+                        } else if (this.timeRange === '24h') {
+                            const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+                            filteredData = filteredData.filter(d => d.timestamp >= dayAgo);
+                        } else if (this.timeRange === '7d') {
+                            const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+                            filteredData = filteredData.filter(d => d.timestamp >= weekAgo);
+                        } else if (this.timeRange === '30d') {
+                            const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+                            filteredData = filteredData.filter(d => d.timestamp >= monthAgo);
+                        }
+                        
+                        // Sort by timestamp
+                        filteredData.sort((a, b) => a.timestamp - b.timestamp);
+                        
+                        // Ensure we have some data - if not, display a placeholder or message
+                        if (filteredData.length === 0) {
+                            // If no data for selected time range, show message
+                            this.showSnackbar('No data available for selected time range', 'info');
+                            return;
+                        }
+                        
+                        // Sample data if we have too many points (improves performance)
+                        const maxPoints = 500;
+                        if (filteredData.length > maxPoints) {
+                            const sampleInterval = Math.floor(filteredData.length / maxPoints);
+                            filteredData = filteredData.filter((_, i) => i % sampleInterval === 0);
+                        }
+                        
+                        // Prepare data for chart
+                        const labels = filteredData.map(d => d.timestamp);
+                        const voltageData = filteredData.map(d => d.voltage);
+                        const tempData = filteredData.map(d => d.cpuTemp);
+                        
+                        // Theme-aware grid and text colors
+                        const textColor = this.isDarkMode ? '#ffffff' : '#666666';
+                        const gridColor = this.isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
+                        
+                        if (this.historyChart) {
+                            // Update existing chart with minimal redraw
+                            this.historyChart.data.labels = labels;
+                            this.historyChart.data.datasets[0].data = voltageData;
+                            this.historyChart.data.datasets[1].data = tempData;
+                            
+                            // Update y-axis scales
+                            if (voltageData.length > 0) {
+                                this.historyChart.options.scales['y-voltage'].min = Math.max(0, Math.min(...voltageData) - 1);
+                                this.historyChart.options.scales['y-voltage'].max = Math.max(...voltageData) + 1;
+                            }
+                            
+                            if (tempData.length > 0) {
+                                this.historyChart.options.scales['y-temp'].min = Math.max(0, Math.min(...tempData) - 5);
+                                this.historyChart.options.scales['y-temp'].max = Math.max(...tempData) + 5;
+                            }
+                            
+                            // Update colors for dark/light mode
+                            this.historyChart.options.scales.x.grid.color = gridColor;
+                            this.historyChart.options.scales.x.ticks.color = textColor;
+                            this.historyChart.options.scales['y-voltage'].grid.color = gridColor;
+                            this.historyChart.options.scales['y-voltage'].ticks.color = textColor;
+                            this.historyChart.options.scales['y-temp'].grid.color = gridColor;
+                            this.historyChart.options.scales['y-temp'].ticks.color = textColor;
+                            
+                            // Use zero duration to avoid animation
+                            this.historyChart.update(0);
+                        } else {
+                            // Create new chart
+                            this.historyChart = new Chart(ctx, {
+                                type: 'line',
+                                data: {
+                                    labels: labels,
+                                    datasets: [
+                                        {
+                                            label: 'Battery Voltage (V)',
+                                            data: voltageData,
+                                            borderColor: '#673AB7',
+                                            backgroundColor: 'rgba(103, 58, 183, 0.1)',
+                                            borderWidth: 2,
+                                            fill: true,
+                                            tension: 0.2,
+                                            yAxisID: 'y-voltage'
+                                        },
+                                        {
+                                            label: 'CPU Temperature (°C)',
+                                            data: tempData,
+                                            borderColor: '#F44336',
+                                            backgroundColor: 'rgba(244, 67, 54, 0.1)',
+                                            borderWidth: 2,
+                                            fill: true,
+                                            tension: 0.2,
+                                            yAxisID: 'y-temp'
+                                        }
+                                    ]
                                 },
-                                {
-                                    label: 'CPU Temperature (°C)',
-                                    data: tempData,
-                                    borderColor: '#F44336',
-                                    backgroundColor: 'rgba(244, 67, 54, 0.1)',
-                                    borderWidth: 2,
-                                    fill: true,
-                                    tension: 0.2,
-                                    yAxisID: 'y-temp'
-                                }
-                            ]
-                        },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            interaction: {
-                                mode: 'index',
-                                intersect: false
-                            },
-                            scales: {
-                                x: {
-                                    type: 'time',
-                                    time: {
-                                        unit: this.getTimeUnit(),
-                                        displayFormats: {
-                                            hour: 'MMM d, HH:mm',
-                                            day: 'MMM d',
-                                            week: 'MMM d',
-                                            month: 'MMM yyyy'
+                                options: {
+                                    responsive: true,
+                                    maintainAspectRatio: false,
+                                    animation: { duration: 0 }, // Disable animation for first render
+                                    interaction: {
+                                        mode: 'index',
+                                        intersect: false
+                                    },
+                                    scales: {
+                                        x: {
+                                            type: 'time',
+                                            grid: {
+                                                color: gridColor
+                                            },
+                                            ticks: {
+                                                color: textColor
+                                            },
+                                            time: {
+                                                unit: this.getTimeUnit(),
+                                                displayFormats: {
+                                                    minute: 'HH:mm',
+                                                    hour: 'HH:mm',
+                                                    day: 'MMM d',
+                                                    week: 'MMM d',
+                                                    month: 'MMM yyyy'
+                                                }
+                                            },
+                                            title: {
+                                                display: true,
+                                                text: 'Time',
+                                                color: textColor
+                                            }
+                                        },
+                                        'y-voltage': {
+                                            type: 'linear',
+                                            position: 'left',
+                                            grid: {
+                                                color: gridColor,
+                                                drawOnChartArea: true
+                                            },
+                                            ticks: {
+                                                color: textColor
+                                            },
+                                            title: {
+                                                display: true,
+                                                text: 'Battery Voltage (V)',
+                                                color: textColor
+                                            },
+                                            min: Math.max(0, Math.min(...voltageData) - 1),
+                                            max: Math.max(...voltageData) + 1
+                                        },
+                                        'y-temp': {
+                                            type: 'linear',
+                                            position: 'right',
+                                            grid: {
+                                                color: gridColor,
+                                                drawOnChartArea: false
+                                            },
+                                            ticks: {
+                                                color: textColor
+                                            },
+                                            title: {
+                                                display: true,
+                                                text: 'CPU Temperature (°C)',
+                                                color: textColor
+                                            },
+                                            min: Math.max(0, Math.min(...tempData) - 5),
+                                            max: Math.max(...tempData) + 5
                                         }
                                     },
-                                    title: {
-                                        display: true,
-                                        text: 'Time'
-                                    }
-                                },
-                                'y-voltage': {
-                                    type: 'linear',
-                                    position: 'left',
-                                    title: {
-                                        display: true,
-                                        text: 'Battery Voltage (V)'
-                                    },
-                                    grid: {
-                                        drawOnChartArea: true
-                                    },
-                                    min: Math.max(0, Math.min(...voltageData) - 1),
-                                    max: Math.max(...voltageData) + 1
-                                },
-                                'y-temp': {
-                                    type: 'linear',
-                                    position: 'right',
-                                    title: {
-                                        display: true,
-                                        text: 'CPU Temperature (°C)'
-                                    },
-                                    grid: {
-                                        drawOnChartArea: false
-                                    },
-                                    min: Math.max(0, Math.min(...tempData) - 5),
-                                    max: Math.max(...tempData) + 5
-                                }
-                            },
-                            plugins: {
-                                legend: {
-                                    display: true,
-                                    position: 'top'
-                                },
-                                tooltip: {
-                                    callbacks: {
-                                        title: function(context) {
-                                            const date = new Date(context[0].parsed.x);
-                                            return date.toLocaleString();
+                                    plugins: {
+                                        legend: {
+                                            display: true,
+                                            position: 'top',
+                                            labels: {
+                                                color: textColor
+                                            }
+                                        },
+                                        tooltip: {
+                                            callbacks: {
+                                                title: function(context) {
+                                                    const date = new Date(context[0].parsed.x);
+                                                    return date.toLocaleString();
+                                                }
+                                            }
                                         }
                                     }
                                 }
+                            });
+                        }
+                    } catch (e) {
+                        console.error("Error updating chart:", e);
+                        // Only destroy and recreate as a last resort
+                        if (e.message && e.message.includes('scales')) {
+                            try {
+                                if (this.historyChart) {
+                                    this.historyChart.destroy();
+                                    this.historyChart = null;
+                                }
+                                // Call updateHistoryChart again to recreate the chart
+                                this.$nextTick(() => this.updateHistoryChart());
+                            } catch (destroyError) {
+                                console.error("Error destroying chart:", destroyError);
                             }
                         }
-                    });
+                    }
                 },
                 
                 getTimeUnit() {
