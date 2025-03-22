@@ -40,8 +40,8 @@ STARTUP_MARKER = DATA_DIR / '.startup_marker'
 
 # Define potential Mavlink endpoints to try
 MAVLINK_ENDPOINTS = [
+    'http://host.docker.internal:6040/v1/mavlink',  # This one works, move to first position
     'http://host.docker.internal:4777/mavlink',
-    'http://host.docker.internal:6040/v1/mavlink',
     'http://localhost:4777/mavlink',
     'http://127.0.0.1:4777/mavlink',
     'http://blueos.local:4777/mavlink'
@@ -226,7 +226,7 @@ class OdometerController(Controller):
                 sys_status_response = requests.get(sys_status_url, timeout=2)
                 
                 if sys_status_response.status_code == 200:
-                    sys_status = sys_status_response.json().get("SYS_STATUS", {})
+                    sys_status = sys_status_response.json().get("message", {})
                     voltage = sys_status.get("voltage_battery", 0) / 1000.0  # Convert from mV to V
                     
                     # Get armed status from HEARTBEAT message
@@ -234,8 +234,17 @@ class OdometerController(Controller):
                     heartbeat_response = requests.get(heartbeat_url, timeout=2)
                     
                     if heartbeat_response.status_code == 200:
-                        heartbeat = heartbeat_response.json().get("HEARTBEAT", {})
-                        base_mode = heartbeat.get("base_mode", 0)
+                        # Parse out the nested structure according to documentation
+                        heartbeat_data = heartbeat_response.json()
+                        heartbeat = heartbeat_data.get("message", {})
+                        
+                        # Handle the nested structure - base_mode is an object with a 'bits' field
+                        base_mode_obj = heartbeat.get("base_mode", {})
+                        if isinstance(base_mode_obj, dict):
+                            base_mode = base_mode_obj.get("bits", 0)
+                        else:
+                            base_mode = base_mode_obj  # Fallback for older API versions
+                            
                         is_armed = bool(base_mode & ARMED_FLAG)  # Check if the ARMED flag is set
                         
                         logging.info(f"Successfully got vehicle status from {endpoint}: voltage={voltage}V, armed={is_armed}")
@@ -384,10 +393,44 @@ app = Litestar(
     route_handlers=[OdometerController],
     state=State({'bag_url':'http://host.docker.internal/bag/v1.0'}),
     static_files_config=[
-        StaticFilesConfig(directories=['app/static'], path='/', html_mode=True)
+        StaticFilesConfig(
+            directories=['static'],  # Path relative to /app where the code runs in container
+            path='/',
+            html_mode=True,
+            name="static"
+        )
     ],
     logging_config=logging_config,
 )
+
+# Add a default route handler to serve index.html explicitly
+@app.get("/")
+def index():
+    from litestar.response import FileResponse
+    return FileResponse(path="static/index.html")
+
+# Add endpoint for BlueOS service registration
+@app.get("/register_service")
+def register_service():
+    from litestar.response import FileResponse
+    response = FileResponse(path="static/register_service")
+    # Add header to prevent BlueOS from wrapping the page
+    response.headers['X-Frame-Options'] = 'ALLOWALL'
+    return response
+
+# Add a catch-all route for static files
+@app.get("/{file_path:path}")
+def static_files(file_path: str):
+    from litestar.response import FileResponse
+    from pathlib import Path
+    
+    # First check if file exists in static directory
+    static_file = Path(f"static/{file_path}")
+    if static_file.exists() and static_file.is_file():
+        return FileResponse(path=str(static_file))
+    
+    # If not found, try to serve index.html for SPA routing
+    return FileResponse(path="static/index.html")
 
 app.logger.addHandler(fh)
 

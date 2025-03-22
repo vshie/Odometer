@@ -1,9 +1,9 @@
 {
-    "name":"Odometer",
-    "description":"Track vehicle usage statistics and maintenance records",
-    "icon":"mdi-speedometer",
-    "company":"Blue Robotics",
-    "version":"0.1.0",
-    "webpage":"",
-    "api":""
+    "name": "Vehicle Odometer",
+    "description": "Track vehicle usage statistics, armed time, battery swaps, and maintenance history with beautiful visualizations",
+    "icon": "mdi-altimeter",
+    "company": "Blue Robotics",
+    "version": "0.1.0",
+    "webpage": "https://github.com/vshie/Odometer",
+    "api": "https://github.com/bluerobotics/BlueOS-docker"
 }
