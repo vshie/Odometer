@@ -134,7 +134,9 @@
                                     Vehicle Usage Distribution
                                 </v-card-title>
                                 <v-card-text class="text-center pa-5">
-                                    <canvas id="usageChart" height="300"></canvas>
+                                    <div style="position: relative; height: 300px; width: 100%;">
+                                        <canvas id="usageChart"></canvas>
+                                    </div>
                                     <div class="caption mt-4 text-center">Proportion of time spent Armed vs Disarmed</div>
                                 </v-card-text>
                             </v-card>
@@ -449,6 +451,12 @@
                     const armedMinutes = this.stats.armed_minutes || 0;
                     const disarmedMinutes = this.stats.disarmed_minutes || 0;
                     
+                    // Destroy previous chart if it exists
+                    if (this.usageChart) {
+                        this.usageChart.destroy();
+                        this.usageChart = null;
+                    }
+                    
                     // If no data or zero total, show placeholder
                     if (armedMinutes === 0 && disarmedMinutes === 0) {
                         const placeholderData = {
@@ -460,16 +468,11 @@
                             }]
                         };
                         
-                        if (this.usageChart) {
-                            this.usageChart.data = placeholderData;
-                            this.usageChart.update();
-                        } else {
-                            this.usageChart = new Chart(ctx, {
-                                type: 'pie',
-                                data: placeholderData,
-                                options: this.getChartOptions(true)
-                            });
-                        }
+                        this.usageChart = new Chart(ctx, {
+                            type: 'pie',
+                            data: placeholderData,
+                            options: this.getChartOptions(true)
+                        });
                         return;
                     }
                     
@@ -484,22 +487,16 @@
                         }]
                     };
                     
-                    if (this.usageChart) {
-                        this.usageChart.data = data;
-                        this.usageChart.options = this.getChartOptions();
-                        this.usageChart.update();
-                    } else {
-                        this.usageChart = new Chart(ctx, {
-                            type: 'pie',
-                            data: data,
-                            options: this.getChartOptions()
-                        });
-                    }
+                    this.usageChart = new Chart(ctx, {
+                        type: 'pie',
+                        data: data,
+                        options: this.getChartOptions()
+                    });
                 },
                 getChartOptions(isPlaceholder = false) {
                     return {
                         responsive: true,
-                        maintainAspectRatio: false,
+                        maintainAspectRatio: true,
                         plugins: {
                             legend: {
                                 display: !isPlaceholder,
@@ -527,7 +524,8 @@
                         },
                         animation: {
                             animateRotate: true,
-                            animateScale: true
+                            animateScale: true,
+                            duration: 500
                         }
                     };
                 }
