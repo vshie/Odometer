@@ -341,7 +341,7 @@ class OdometerController(Controller):
             "data": maintenance_records
         }
     
-    @post("/maintenance", sync_to_thread=True)
+    @post("/maintenance")
     async def add_maintenance(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Add a new maintenance record"""
         event_type = data.get('event_type')
@@ -387,7 +387,6 @@ app = Litestar(
         StaticFilesConfig(directories=['app/static'], path='/', html_mode=True)
     ],
     logging_config=logging_config,
-    port=PORT,
 )
 
 app.logger.addHandler(fh)
