@@ -169,6 +169,14 @@
                                 <v-card-text class="text-center pa-5">
                                     <div style="position: relative; height: 400px; width: 100%;">
                                         <canvas id="historyChart"></canvas>
+                                        <v-progress-circular
+                                            v-if="loading"
+                                            indeterminate
+                                            color="primary"
+                                            size="32"
+                                            width="3"
+                                            style="position: absolute; top: 10px; right: 10px;"
+                                        ></v-progress-circular>
                                     </div>
                                     <div class="caption mt-4 text-center">CPU Temperature and Battery Voltage over time</div>
                                 </v-card-text>
@@ -557,8 +565,8 @@
                 this.updateInterval = setInterval(() => {
                     if (!document.hidden) {
                         this.fetchStats();
-                        // Only update historical data every 2 minutes (4 cycles)
-                        if (this.updateCount % 4 === 0) {
+                        // Fetch historical data every 2 cycles (1 minute) instead of every 4 cycles (2 minutes)
+                        if (this.updateCount % 2 === 0) {
                             this.fetchHistoricalData();
                         }
                         // Check for theme changes in BlueOS every cycle
@@ -597,7 +605,8 @@
             },
             watch: {
                 timeRange() {
-                    this.updateHistoryChart();
+                    // Always get fresh data when changing time ranges
+                    this.fetchHistoricalData();
                 },
                 isDarkMode() {
                     // Update Vuetify theme when dark mode changes
@@ -756,8 +765,38 @@
                     axios.get('/stats')
                         .then(response => {
                             if (response.data.status === 'success') {
+                                // Save old values to check for changes
+                                const oldTemp = this.stats.cpu_temp;
+                                const oldVoltage = this.stats.last_voltage;
+                                
+                                // Update stats
                                 this.stats = response.data.data;
                                 this.updateUsageChart();
+                                
+                                // If we're in the 15-minute view and values changed, immediately 
+                                // add the new point to the chart for real-time updates
+                                if (this.timeRange === '15m' && this.historyChart && 
+                                    (oldTemp !== this.stats.cpu_temp || oldVoltage !== this.stats.last_voltage)) {
+                                    
+                                    const now = new Date();
+                                    
+                                    // Add new voltage point
+                                    if (this.historyChart.data.datasets[0].data) {
+                                        this.historyChart.data.labels.push(now);
+                                        this.historyChart.data.datasets[0].data.push(this.stats.last_voltage);
+                                    }
+                                    
+                                    // Add new temperature point if it's valid (greater than 0)
+                                    if (this.historyChart.data.datasets[1].data && this.stats.cpu_temp > 0) {
+                                        this.historyChart.data.datasets[1].data.push({
+                                            x: now,
+                                            y: this.stats.cpu_temp
+                                        });
+                                    }
+                                    
+                                    // Update the chart
+                                    this.historyChart.update();
+                                }
                             }
                         })
                         .catch(error => {
@@ -941,12 +980,18 @@
                     };
                 },
                 fetchHistoricalData() {
+                    // If already loading, don't start another request
+                    if (this.loading) return;
+                    
                     this.loading = true;
                     
                     // Use a direct XMLHttpRequest approach for better CSV handling
                     const xhr = new XMLHttpRequest();
                     xhr.open('GET', '/download/odometer', true);
                     xhr.responseType = 'text';
+                    
+                    // Keep track of when this request started to avoid race conditions
+                    const requestTimestamp = Date.now();
                     
                     xhr.onload = () => {
                         if (xhr.status === 200) {
@@ -1003,7 +1048,10 @@
                             console.error('Failed to load CSV data:', xhr.status, xhr.statusText);
                             this.showSnackbar('Failed to load historical data', 'error');
                         }
-                        this.loading = false;
+                        // Clear loading after a slight delay to prevent flicker
+                        setTimeout(() => {
+                            this.loading = false;
+                        }, 300);
                     };
                     
                     xhr.onerror = () => {
@@ -1098,8 +1146,10 @@
                             this.historyChart.options.scales['y-temp'].grid.color = gridColor;
                             this.historyChart.options.scales['y-temp'].ticks.color = textColor;
                             
-                            // Use zero duration to avoid animation
-                            this.historyChart.update(0);
+                            // Use a short animation duration for updates (250ms)
+                            this.historyChart.options.animation.duration = 250;
+                            // Update the chart
+                            this.historyChart.update();
                         } else {
                             // Set initial min/max for temperature scale
                             let tempMin = 20;  // Default min temperature
