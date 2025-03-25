@@ -869,8 +869,18 @@
                 formatDate(isoString) {
                     try {
                         const date = new Date(isoString);
-                        return date.toLocaleString();
+                        // Use Intl.DateTimeFormat for better localization with time zone
+                        return new Intl.DateTimeFormat(undefined, {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit',
+                            timeZoneName: 'short'
+                        }).format(date);
                     } catch (e) {
+                        console.error('Error formatting date:', e);
                         return isoString;
                     }
                 },
