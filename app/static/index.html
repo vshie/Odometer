@@ -1103,19 +1103,19 @@
                         let filteredData = [...this.historicalData];
                         
                         if (this.timeRange === '15m') {
-                            const minutesAgo = new Date(now.getTime() - 15 * 60 * 1000);
+                            const minutesAgo = new Date(now.getTime() - (15 * 60 * 1000));
                             filteredData = filteredData.filter(d => d.timestamp >= minutesAgo);
                         } else if (this.timeRange === '1h') {
-                            const hourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+                            const hourAgo = new Date(now.getTime() - (60 * 60 * 1000));
                             filteredData = filteredData.filter(d => d.timestamp >= hourAgo);
                         } else if (this.timeRange === '24h') {
-                            const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+                            const dayAgo = new Date(now.getTime() - (24 * 60 * 60 * 1000));
                             filteredData = filteredData.filter(d => d.timestamp >= dayAgo);
                         } else if (this.timeRange === '7d') {
-                            const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+                            const weekAgo = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
                             filteredData = filteredData.filter(d => d.timestamp >= weekAgo);
                         } else if (this.timeRange === '30d') {
-                            const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+                            const monthAgo = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
                             filteredData = filteredData.filter(d => d.timestamp >= monthAgo);
                         }
                         
