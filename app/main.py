@@ -306,12 +306,11 @@ class OdometerService:
                 # Check for battery swap
                 if current_voltage > (self.stats['last_voltage'] + 1.0) and self.stats['last_voltage'] > 0:
                     self.stats['battery_swaps'] += 1
-                    logger.info(f"Battery swap detected! Adding {current_consumed}mAh to total")
-                    # Add the current_consumed value to our total - this represents the energy used by the vehicle
-                    self.stats['total_mah_consumed'] += current_consumed
-                else:
-                    # If no battery swap, update the last current consumed value
-                    self.stats['last_current_consumed'] = current_consumed
+                    logger.info(f"Battery swap detected! Current consumed: {current_consumed}mAh")
+                
+                # Always update the total mAh consumed with the current value
+                self.stats['total_mah_consumed'] = current_consumed
+                self.stats['last_current_consumed'] = current_consumed
                 
                 # Update last voltage and CPU temperature
                 self.stats['last_voltage'] = current_voltage
