@@ -3,7 +3,7 @@
     <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BlueOS Odometer</title>
+    <title>Odometer - BlueOS</title>
     <!-- Vuetify CSS -->
     <link href="https://cdn.jsdelivr.net/npm/vuetify@2.6.14/dist/vuetify.min.css" rel="stylesheet">
     <!-- Material Design Icons -->
@@ -49,7 +49,7 @@
                     <v-row>
                         <v-col cols="12" md="4">
                             <v-card class="stat-card" elevation="4">
-                                <v-card-title class="primary white--text">
+                                <v-card-title style="background-color: #135da3" class="white--text">
                                     <v-icon large color="white" class="mr-2">mdi-timer</v-icon>
                                     Total Uptime
                                 </v-card-title>
@@ -64,7 +64,7 @@
 
                         <v-col cols="12" md="4">
                             <v-card class="stat-card" elevation="4">
-                                <v-card-title class="success white--text">
+                                <v-card-title style="background-color: #2699d0" class="white--text">
                                     <v-icon large color="white" class="mr-2">mdi-shield-lock</v-icon>
                                     Armed Time
                                 </v-card-title>
@@ -79,24 +79,7 @@
 
                         <v-col cols="12" md="4">
                             <v-card class="stat-card" elevation="4">
-                                <v-card-title class="warning white--text">
-                                    <v-icon large color="white" class="mr-2">mdi-shield</v-icon>
-                                    Disarmed Time
-                                </v-card-title>
-                                <v-card-text class="text-center pa-5">
-                                    <div class="timer-display">
-                                        {{ formatTime(stats.disarmed_minutes) }}
-                                    </div>
-                                    <div class="caption mt-2">Time vehicle has been disarmed</div>
-                                </v-card-text>
-                            </v-card>
-                        </v-col>
-                    </v-row>
-
-                    <v-row class="mt-4">
-                        <v-col cols="12" md="4">
-                            <v-card class="stat-card" elevation="4">
-                                <v-card-title class="secondary white--text">
+                                <v-card-title style="background-color: #4fa483" class="white--text">
                                     <v-icon large color="white" class="mr-2">mdi-battery-sync</v-icon>
                                     Battery Swaps
                                 </v-card-title>
@@ -108,10 +91,12 @@
                                 </v-card-text>
                             </v-card>
                         </v-col>
+                    </v-row>
 
+                    <v-row class="mt-4">
                         <v-col cols="12" md="4">
                             <v-card class="stat-card" elevation="4">
-                                <v-card-title class="deep-purple white--text">
+                                <v-card-title style="background-color: #3699d0" class="white--text">
                                     <v-icon large color="white" class="mr-2">mdi-battery</v-icon>
                                     Battery Voltage
                                 </v-card-title>
@@ -126,7 +111,7 @@
 
                         <v-col cols="12" md="4">
                             <v-card class="stat-card" elevation="4">
-                                <v-card-title class="red darken-1 white--text">
+                                <v-card-title style="background-color: #012f46" class="white--text">
                                     <v-icon large color="white" class="mr-2">mdi-thermometer</v-icon>
                                     CPU Temperature
                                 </v-card-title>
@@ -138,13 +123,10 @@
                                 </v-card-text>
                             </v-card>
                         </v-col>
-                    </v-row>
 
-                    <!-- Add new row for mAh consumed -->
-                    <v-row class="mt-4">
-                        <v-col cols="12" md="4" offset-md="4">
+                        <v-col cols="12" md="4">
                             <v-card class="stat-card" elevation="4">
-                                <v-card-title class="orange darken-1 white--text">
+                                <v-card-title style="background-color: #135da3" class="white--text">
                                     <v-icon large color="white" class="mr-2">mdi-battery-charging</v-icon>
                                     Total Energy Consumed
                                 </v-card-title>
