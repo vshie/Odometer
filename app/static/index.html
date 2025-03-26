@@ -3,7 +3,7 @@
     <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Odometer - BlueOS</title>
+    <title>Odometer</title>
     <!-- Vuetify CSS -->
     <link href="https://cdn.jsdelivr.net/npm/vuetify@2.6.14/dist/vuetify.min.css" rel="stylesheet">
     <!-- Material Design Icons -->
@@ -39,14 +39,6 @@
         <v-app :theme="isDarkMode ? 'dark' : 'light'">
             <v-main>
                 <v-container fluid>
-                    <v-row>
-                        <v-col cols="12">
-                            <div class="text-center my-5">
-                                <img src="/static/extension_logo.png" alt="Odometer Logo" style="width: 50%;">
-                            </div>
-                        </v-col>
-                    </v-row>
-
                     <!-- Stats Section -->
                     <v-row>
                         <v-col cols="12" md="4">
@@ -144,16 +136,8 @@
 
                     <!-- Pie Chart for Armed/Disarmed Time -->
                     <v-row class="mt-6">
-                        <v-col cols="12" md="4">
-                            <v-card elevation="4">
-                                <v-card-title class="blue-grey white--text">
-                                    <v-icon large color="white" class="mr-2">mdi-image</v-icon>
-                                    Odometer Logo
-                                </v-card-title>
-                                <v-card-text class="text-center pa-5">
-                                    <img src="/static/extension_logo.png" alt="Odometer Logo" style="width: 100%;">
-                                </v-card-text>
-                            </v-card>
+                        <v-col cols="12" md="4" class="d-flex align-center justify-center">
+                            <img src="/static/extension_logo.png" alt="Odometer Logo" style="width: 100%;">
                         </v-col>
                         <v-col cols="12" md="8">
                             <v-card elevation="4">

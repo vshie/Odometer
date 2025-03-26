@@ -1,5 +1,5 @@
 {
-    "name": "Odometer - BlueOS",
+    "name": "Odometer",
     "description": "Track vehicle usage statistics, armed time, battery swaps, and maintenance history with beautiful visualizations",
     "icon": "mdi-altimeter",
     "company": "Blue Robotics",
