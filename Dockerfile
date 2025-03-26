@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir \
 
 EXPOSE 7042/tcp
 
-LABEL version="0.1.0"
+LABEL version="1.0.0"
 
 ARG IMAGE_NAME
 

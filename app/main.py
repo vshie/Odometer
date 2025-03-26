@@ -386,7 +386,9 @@ class OdometerService:
                         voltage = battery_status.get('voltages')[0] / 1000.0  # Convert from mV to V
                     
                     if 'current_consumed' in battery_status:
-                        current_consumed = float(battery_status.get('current_consumed', 0))
+                        # Handle negative values - they represent actual consumption
+                        current_consumed = abs(float(battery_status.get('current_consumed', 0)))
+                        logger.info(f"Raw current_consumed: {battery_status.get('current_consumed')}, Processed: {current_consumed}")
                     
                     # Get armed status from HEARTBEAT message
                     heartbeat_url = f"{endpoint}/HEARTBEAT"
