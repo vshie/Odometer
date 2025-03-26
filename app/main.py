@@ -433,11 +433,7 @@ class OdometerService:
         """Send odometer stats to Mavlink as named float values"""
         stats_to_send = {
             "ODO_UPTM": self.stats['total_minutes'],
-            "ODO_ARMM": self.stats['armed_minutes'],
-            "ODO_DARM": self.stats['disarmed_minutes'],
-            "ODO_BSWP": self.stats['battery_swaps'],
-            "ODO_STRT": self.stats['startups'],
-            "ODO_MAH": self.stats['total_mah_consumed']  # Add mAh consumed to Mavlink stats
+            "ODO_MAH": self.stats['total_mah_consumed']  # Ah consumed
         }
         
         for name, value in stats_to_send.items():
