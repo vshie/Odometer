@@ -42,7 +42,7 @@
                     <v-row>
                         <v-col cols="12">
                             <div class="text-center my-5">
-                                <img src="/static/extension_logo.png" alt="Odometer Logo">
+                                <img src="/static/extension_logo.png" alt="Odometer Logo" style="width: 50%;">
                             </div>
                         </v-col>
                     </v-row>
@@ -144,7 +144,18 @@
 
                     <!-- Pie Chart for Armed/Disarmed Time -->
                     <v-row class="mt-6">
-                        <v-col cols="12" md="8" offset-md="2">
+                        <v-col cols="12" md="4">
+                            <v-card elevation="4">
+                                <v-card-title class="blue-grey white--text">
+                                    <v-icon large color="white" class="mr-2">mdi-image</v-icon>
+                                    Odometer Logo
+                                </v-card-title>
+                                <v-card-text class="text-center pa-5">
+                                    <img src="/static/extension_logo.png" alt="Odometer Logo" style="width: 100%;">
+                                </v-card-text>
+                            </v-card>
+                        </v-col>
+                        <v-col cols="12" md="8">
                             <v-card elevation="4">
                                 <v-card-title class="blue-grey white--text">
                                     <v-icon large color="white" class="mr-2">mdi-chart-pie</v-icon>
