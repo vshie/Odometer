@@ -1,6 +1,6 @@
 # BlueOS Odometer Extension
 
-The BlueOS Odometer Extension tracks your vehicle's usage stats and maintenance history, providing you with valuable data about your vehicle's operational life and history. When understanding failure rates and theh cost of system operations vs. time, data is key! This extension aspires to be like the odometer of your car - but perhaps easier to fiddle with! 
+The BlueOS Odometer Extension tracks your vehicle's usage stats and maintenance history, providing you with valuable data about your vehicle's operational life and history. When understanding failure rates and the cost of system operations vs. time, data is key! This extension aspires to be like the odometer of your car - but perhaps easier to fiddle with! 
 
 ## Features
 
@@ -27,13 +27,42 @@ The Odometer polls the Mavlink2Rest API once per minute to:
 
 ### Maintenance Logging
 
-You can add maintenance records through the web interface, which will be stored in a separate CSV file. Each record includes:
+The maintenance log helps you track all important events related to your vehicle's upkeep. You can access it through the web interface, where you can:
 
-- Timestamp
-- Event type (Repair, Replacement, Maintenance, Inspection, Note)
-- Detailed description
+1. **Add New Records**:
+   - Select an event type (Repair, Replacement, Maintenance, Inspection, or Note)
+   - Add detailed description of the work performed
+   - Records are automatically timestamped with the current time
 
-You can edit the time after creating a log entry to be when the event occured, instead of when it was recorded. 
+2. **Edit Records**:
+   - Click the pencil icon next to any record
+   - Modify the date and time to reflect when the event actually occurred
+   - This is useful for logging past maintenance events
+
+3. **Delete Records**:
+   - Click the trash icon next to any record
+   - Confirm the deletion in two steps to prevent accidental deletions
+   - This action cannot be undone
+
+4. **View Records**:
+   - Records are displayed in a table format
+   - Each record shows the date/time, event type (color-coded), and details
+   - Use the pagination controls to view more records
+   - Records are sorted by date (newest first)
+
+5. **Export Records**:
+   - Download all maintenance records as a CSV file
+   - Useful for backup or analysis in spreadsheet software
+
+### Event Types
+
+The maintenance log supports the following event types, each color-coded for easy identification:
+
+- **Repair** (Red): For fixing issues or problems
+- **Replacement** (Blue): For replacing components or parts
+- **Maintenance** (Green): For documenting routine maintenance tasks
+- **Inspection** (Amber): For system checks and inspections
+- **Note** (Grey): For general notes or observations
 
 ## Requirements
 

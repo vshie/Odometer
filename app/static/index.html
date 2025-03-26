@@ -1146,6 +1146,7 @@
                         // Prepare data for chart
                         const labels = filteredData.map(d => d.timestamp);
                         const voltageData = filteredData.map(d => d.voltage);
+                        const mahData = filteredData.map(d => (d.mah_consumed || 0) / 100); // Convert cAh to Ah
                         
                         // Create a completely separate array of valid temperature data points
                         // This ensures that only points with valid temperature readings are plotted
@@ -1161,9 +1162,8 @@
                             // Update existing chart with minimal redraw
                             this.historyChart.data.labels = labels;
                             this.historyChart.data.datasets[0].data = voltageData;
-                            
-                            // Use the valid temperature points
                             this.historyChart.data.datasets[1].data = validTempPoints;
+                            this.historyChart.data.datasets[2].data = mahData;
                             
                             // Update y-axis scales
                             if (voltageData.length > 0) {
@@ -1177,6 +1177,12 @@
                                 this.historyChart.options.scales['y-temp'].min = Math.max(0, Math.min(...tempValues) - 5);
                                 this.historyChart.options.scales['y-temp'].max = Math.max(...tempValues) + 5;
                             }
+
+                            // Update mAh scales
+                            if (mahData.length > 0) {
+                                this.historyChart.options.scales['y-mah'].min = 0;
+                                this.historyChart.options.scales['y-mah'].max = Math.max(...mahData) * 1.1;
+                            }
                             
                             // Update colors for dark/light mode
                             this.historyChart.options.scales.x.grid.color = gridColor;
@@ -1185,6 +1191,8 @@
                             this.historyChart.options.scales['y-voltage'].ticks.color = textColor;
                             this.historyChart.options.scales['y-temp'].grid.color = gridColor;
                             this.historyChart.options.scales['y-temp'].ticks.color = textColor;
+                            this.historyChart.options.scales['y-mah'].grid.color = gridColor;
+                            this.historyChart.options.scales['y-mah'].ticks.color = textColor;
                             
                             // Use a short animation duration for updates (250ms)
                             this.historyChart.options.animation.duration = 250;
@@ -1227,10 +1235,18 @@
                                             fill: true,
                                             tension: 0.2,
                                             yAxisID: 'y-temp',
-                                            // Tell Chart.js that we're using x,y format for data points
                                             parsing: true,
-                                            // Always span gaps between valid data points
                                             spanGaps: true
+                                        },
+                                        {
+                                            label: 'Energy Consumed (Ah)',
+                                            data: mahData,
+                                            borderColor: '#4CAF50',
+                                            backgroundColor: 'rgba(76, 175, 80, 0.1)',
+                                            borderWidth: 2,
+                                            fill: true,
+                                            tension: 0.2,
+                                            yAxisID: 'y-mah'
                                         }
                                     ]
                                 },
@@ -1269,7 +1285,7 @@
                                         },
                                         'y-voltage': {
                                             type: 'linear',
-                                            position: 'left',
+                                            position: 'right',
                                             grid: {
                                                 color: gridColor,
                                                 drawOnChartArea: true
@@ -1302,6 +1318,24 @@
                                             },
                                             min: tempMin,
                                             max: tempMax
+                                        },
+                                        'y-mah': {
+                                            type: 'linear',
+                                            position: 'right',
+                                            grid: {
+                                                color: gridColor,
+                                                drawOnChartArea: true
+                                            },
+                                            ticks: {
+                                                color: textColor
+                                            },
+                                            title: {
+                                                display: true,
+                                                text: 'Energy Consumed (Ah)',
+                                                color: textColor
+                                            },
+                                            min: 0,
+                                            max: Math.max(...mahData) * 1.1
                                         }
                                     },
                                     plugins: {
@@ -1328,18 +1362,31 @@
                                                         return null;
                                                     }
                                                     
-                                                    // Handle voltage dataset normally
-                                                    let label = context.dataset.label || '';
-                                                    if (label) {
-                                                        label += ': ';
-                                                    }
-                                                    if (context.parsed.y !== null) {
-                                                        label += context.parsed.y.toFixed(1);
-                                                        if (context.dataset.label.includes('Voltage')) {
-                                                            label += 'V';
+                                                    // Handle voltage dataset
+                                                    if (context.dataset.label.includes('Voltage')) {
+                                                        let label = context.dataset.label || '';
+                                                        if (label) {
+                                                            label += ': ';
                                                         }
+                                                        if (context.parsed.y !== null) {
+                                                            label += context.parsed.y.toFixed(1) + 'V';
+                                                        }
+                                                        return label;
                                                     }
-                                                    return label;
+
+                                                    // Handle mAh dataset
+                                                    if (context.dataset.label.includes('Energy')) {
+                                                        let label = context.dataset.label || '';
+                                                        if (label) {
+                                                            label += ': ';
+                                                        }
+                                                        if (context.parsed.y !== null) {
+                                                            label += context.parsed.y.toFixed(2) + ' Ah';
+                                                        }
+                                                        return label;
+                                                    }
+                                                    
+                                                    return null;
                                                 }
                                             }
                                         }
