@@ -150,38 +150,97 @@ class OdometerService:
         except Exception as e:
             logger.error(f"Error upgrading CSV format: {e}")
     
+    def cleanup_csv(self):
+        """Clean up the CSV file by removing bad rows and ensuring proper format"""
+        try:
+            if not ODOMETER_CSV.exists():
+                return
+
+            # Read all rows
+            rows = []
+            with open(ODOMETER_CSV, 'r', newline='') as f:
+                reader = csv.reader(f)
+                headers = next(reader)  # Get header row
+                rows.append(headers)  # Keep header row
+                
+                for row in reader:
+                    # Skip empty rows or rows with all empty values
+                    if not row or all(cell.strip() == '' for cell in row):
+                        continue
+                    
+                    # Skip rows that don't have enough columns
+                    if len(row) < len(headers):
+                        continue
+                    
+                    # Skip rows with invalid timestamp
+                    try:
+                        datetime.datetime.fromisoformat(row[0])
+                    except (ValueError, TypeError):
+                        continue
+                    
+                    # Skip rows with invalid numeric values
+                    try:
+                        if row[1].strip(): int(row[1])  # total_minutes
+                        if row[2].strip(): int(row[2])  # armed_minutes
+                        if row[3].strip(): int(row[3])  # disarmed_minutes
+                        if row[4].strip(): int(row[4])  # battery_swaps
+                        if row[5].strip(): int(row[5])  # startups
+                        if row[6].strip(): float(row[6])  # voltage
+                        if row[7].strip(): float(row[7])  # cpu_temp
+                        if row[8].strip(): float(row[8])  # mah_consumed
+                    except (ValueError, TypeError):
+                        continue
+                    
+                    rows.append(row)
+            
+            # Write back cleaned data
+            with open(ODOMETER_CSV, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerows(rows)
+            
+            logger.info("Successfully cleaned up CSV file")
+            
+        except Exception as e:
+            logger.error(f"Error cleaning up CSV file: {e}")
+
     def load_stats(self):
         """Load the latest stats from the CSV file"""
         if ODOMETER_CSV.exists():
+            # First clean up the CSV file
+            self.cleanup_csv()
+            
             with open(ODOMETER_CSV, 'r', newline='') as f:
                 reader = csv.reader(f)
                 headers = next(reader)  # Skip header row
                 last_row = None
                 for row in reader:
+                    # Skip empty rows or rows with all empty values
+                    if not row or all(cell.strip() == '' for cell in row):
+                        continue
                     last_row = row
                 
                 if last_row:
                     with self.stats_lock:
                         # Basic stats that have always existed
-                        self.stats['total_minutes'] = int(last_row[1])
-                        self.stats['armed_minutes'] = int(last_row[2])
-                        self.stats['disarmed_minutes'] = int(last_row[3])
-                        self.stats['battery_swaps'] = int(last_row[4])
+                        self.stats['total_minutes'] = int(last_row[1]) if last_row[1].strip() else 0
+                        self.stats['armed_minutes'] = int(last_row[2]) if last_row[2].strip() else 0
+                        self.stats['disarmed_minutes'] = int(last_row[3]) if last_row[3].strip() else 0
+                        self.stats['battery_swaps'] = int(last_row[4]) if last_row[4].strip() else 0
                         
                         # Handle loading "startups" field if it exists in the CSV
-                        if len(last_row) > 5 and last_row[5]:
+                        if len(last_row) > 5 and last_row[5].strip():
                             self.stats['startups'] = int(last_row[5])
                         else:
                             self.stats['startups'] = 0
                         
                         # Voltage is at index 6 if startups field exists
                         if len(last_row) > 6:
-                            self.stats['last_voltage'] = float(last_row[6])
+                            self.stats['last_voltage'] = float(last_row[6]) if last_row[6].strip() else 0.0
                         else:
-                            self.stats['last_voltage'] = float(last_row[5])
+                            self.stats['last_voltage'] = float(last_row[5]) if last_row[5].strip() else 0.0
                         
                         # CPU temperature might be at index 7 if the field exists
-                        if len(last_row) > 7 and last_row[7]:
+                        if len(last_row) > 7 and last_row[7].strip():
                             try:
                                 self.stats['cpu_temp'] = float(last_row[7])
                             except (ValueError, TypeError):
@@ -190,7 +249,7 @@ class OdometerService:
                             self.stats['cpu_temp'] = 0.0
                         
                         # Load mAh consumed if it exists (index 8)
-                        if len(last_row) > 8 and last_row[8]:
+                        if len(last_row) > 8 and last_row[8].strip():
                             try:
                                 self.stats['total_mah_consumed'] = float(last_row[8])
                             except (ValueError, TypeError):
