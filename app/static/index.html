@@ -42,7 +42,7 @@
                     <v-row>
                         <v-col cols="12">
                             <div class="text-center my-5">
-                                <img src="/static/extensions_logo.png" alt="Odometer Logo" style="max-height: 80px;">
+                                <img src="/static/extension_logo.png" alt="Odometer Logo" style="max-height: 80px;">
                             </div>
                         </v-col>
                     </v-row>
@@ -134,7 +134,7 @@
                                 </v-card-title>
                                 <v-card-text class="text-center pa-5">
                                     <div class="number-display">
-                                        {{ (stats.total_mah_consumed / 100).toFixed(2) }} Ah
+                                        {{ stats.total_mah_consumed.toFixed(2) }} Ah
                                     </div>
                                     <div class="caption mt-2">Current battery energy consumed</div>
                                 </v-card-text>
@@ -1048,7 +1048,7 @@
                                         if (mahIndex !== -1 && values[mahIndex] && values[mahIndex].trim() !== '') {
                                             const mahValue = parseFloat(values[mahIndex]);
                                             if (!isNaN(mahValue)) {
-                                                mahConsumed = mahValue / 100; // Convert cAh to Ah
+                                                mahConsumed = mahValue; // Value is already in Ah
                                             }
                                         }
                                         

@@ -309,8 +309,8 @@ class OdometerService:
                     logger.info(f"Battery swap detected! Current consumed: {current_consumed}mAh")
                 
                 # Always update the total mAh consumed with the current value
-                self.stats['total_mah_consumed'] = current_consumed
-                self.stats['last_current_consumed'] = current_consumed
+                self.stats['total_mah_consumed'] = current_consumed / 1000  # Convert cAh to Ah
+                self.stats['last_current_consumed'] = current_consumed / 1000  # Convert cAh to Ah
                 
                 # Update last voltage and CPU temperature
                 self.stats['last_voltage'] = current_voltage
