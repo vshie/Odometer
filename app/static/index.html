@@ -1102,25 +1102,32 @@
                         const now = new Date();
                         let filteredData = [...this.historicalData];
                         
-                        if (this.timeRange === '15m') {
-                            const minutesAgo = new Date(now.getTime() - (15 * 60 * 1000));
-                            filteredData = filteredData.filter(d => d.timestamp >= minutesAgo);
-                        } else if (this.timeRange === '1h') {
-                            const hourAgo = new Date(now.getTime() - (60 * 60 * 1000));
-                            filteredData = filteredData.filter(d => d.timestamp >= hourAgo);
-                        } else if (this.timeRange === '24h') {
-                            const dayAgo = new Date(now.getTime() - (24 * 60 * 60 * 1000));
-                            filteredData = filteredData.filter(d => d.timestamp >= dayAgo);
-                        } else if (this.timeRange === '7d') {
-                            const weekAgo = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
-                            filteredData = filteredData.filter(d => d.timestamp >= weekAgo);
-                        } else if (this.timeRange === '30d') {
-                            const monthAgo = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
-                            filteredData = filteredData.filter(d => d.timestamp >= monthAgo);
-                        }
+                        // Convert timestamps to Date objects if they aren't already
+                        filteredData = filteredData.map(d => ({
+                            ...d,
+                            timestamp: d.timestamp instanceof Date ? d.timestamp : new Date(d.timestamp)
+                        }));
                         
-                        // Sort by timestamp
+                        // Sort data by timestamp
                         filteredData.sort((a, b) => a.timestamp - b.timestamp);
+                        
+                        // Filter based on time range
+                        if (this.timeRange === '15m') {
+                            const cutoffTime = new Date(now.getTime() - (15 * 60 * 1000));
+                            filteredData = filteredData.filter(d => d.timestamp >= cutoffTime);
+                        } else if (this.timeRange === '1h') {
+                            const cutoffTime = new Date(now.getTime() - (60 * 60 * 1000));
+                            filteredData = filteredData.filter(d => d.timestamp >= cutoffTime);
+                        } else if (this.timeRange === '24h') {
+                            const cutoffTime = new Date(now.getTime() - (24 * 60 * 60 * 1000));
+                            filteredData = filteredData.filter(d => d.timestamp >= cutoffTime);
+                        } else if (this.timeRange === '7d') {
+                            const cutoffTime = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
+                            filteredData = filteredData.filter(d => d.timestamp >= cutoffTime);
+                        } else if (this.timeRange === '30d') {
+                            const cutoffTime = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
+                            filteredData = filteredData.filter(d => d.timestamp >= cutoffTime);
+                        }
                         
                         // Ensure we have some data - if not, display a placeholder or message
                         if (filteredData.length === 0) {

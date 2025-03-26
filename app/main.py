@@ -272,19 +272,19 @@ class OdometerService:
         with open(ODOMETER_CSV, 'a', newline='') as f:
             writer = csv.writer(f)
             # Only write valid CPU temperature values to CSV
-            cpu_temp_value = self.stats['cpu_temp'] if self.stats['cpu_temp'] > 0 else ''
+            cpu_temp_value = str(self.stats['cpu_temp']) if self.stats['cpu_temp'] > 0 else ''
             
-            # Create row with all fields
+            # Create row with all fields, converting all values to strings
             row = [
                 datetime.datetime.now().isoformat(),
-                self.stats['total_minutes'],
-                self.stats['armed_minutes'],
-                self.stats['disarmed_minutes'],
-                self.stats['battery_swaps'],
-                self.stats['startups'],
-                self.stats['last_voltage'],
+                str(self.stats['total_minutes']),
+                str(self.stats['armed_minutes']),
+                str(self.stats['disarmed_minutes']),
+                str(self.stats['battery_swaps']),
+                str(self.stats['startups']),
+                str(self.stats['last_voltage']),
                 cpu_temp_value,  # Only write non-zero values
-                self.stats['total_mah_consumed'],  # Add total mAh consumed
+                str(self.stats['total_mah_consumed']),  # Add total mAh consumed
                 time_status + (" (startup)" if startup_detected else "")
             ]
             
