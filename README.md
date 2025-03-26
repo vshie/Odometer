@@ -44,7 +44,3 @@ You can edit the time after creating a log entry to be when the event occured, i
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## Acknowledgments
-
-- BlueOS team for their excellent vehicle management platform
-- Blue Robotics for fostering the underwater robotics community

@@ -140,6 +140,24 @@
                         </v-col>
                     </v-row>
 
+                    <!-- Add new row for mAh consumed -->
+                    <v-row class="mt-4">
+                        <v-col cols="12" md="4" offset-md="4">
+                            <v-card class="stat-card" elevation="4">
+                                <v-card-title class="orange darken-1 white--text">
+                                    <v-icon large color="white" class="mr-2">mdi-battery-charging</v-icon>
+                                    Total Energy Consumed
+                                </v-card-title>
+                                <v-card-text class="text-center pa-5">
+                                    <div class="number-display">
+                                        {{ stats.total_mah_consumed.toFixed(0) }} mAh
+                                    </div>
+                                    <div class="caption mt-2">Cumulative battery energy consumed</div>
+                                </v-card-text>
+                            </v-card>
+                        </v-col>
+                    </v-row>
+
                     <!-- Pie Chart for Armed/Disarmed Time -->
                     <v-row class="mt-6">
                         <v-col cols="12" md="8" offset-md="2">
@@ -183,6 +201,7 @@
                                 <v-card-actions class="justify-center pb-4">
                                     <v-btn-toggle v-model="timeRange" mandatory>
                                         <v-btn value="15m">15 Min</v-btn>
+                                        <v-btn value="1h">1 Hour</v-btn>
                                         <v-btn value="24h">24 Hours</v-btn>
                                         <v-btn value="7d">7 Days</v-btn>
                                         <v-btn value="30d">30 Days</v-btn>
@@ -504,7 +523,8 @@
                         disarmed_minutes: 0,
                         battery_swaps: 0,
                         last_voltage: 0.0,
-                        cpu_temp: 0.0
+                        cpu_temp: 0.0,
+                        total_mah_consumed: 0  // Add new field for mAh consumed
                     },
                     maintenanceLog: [],
                     maintenanceHeaders: [
@@ -1085,6 +1105,9 @@
                         if (this.timeRange === '15m') {
                             const minutesAgo = new Date(now.getTime() - 15 * 60 * 1000);
                             filteredData = filteredData.filter(d => d.timestamp >= minutesAgo);
+                        } else if (this.timeRange === '1h') {
+                            const hourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+                            filteredData = filteredData.filter(d => d.timestamp >= hourAgo);
                         } else if (this.timeRange === '24h') {
                             const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
                             filteredData = filteredData.filter(d => d.timestamp >= dayAgo);
@@ -1338,6 +1361,7 @@
                 getTimeUnit() {
                     switch(this.timeRange) {
                         case '15m': return 'minute';
+                        case '1h': return 'minute';
                         case '24h': return 'hour';
                         case '7d': return 'day';
                         case '30d': return 'week';

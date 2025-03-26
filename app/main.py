@@ -62,6 +62,8 @@ class OdometerService:
             'startups': 0,
             'last_voltage': 0.0,
             'cpu_temp': 0.0,
+            'total_mah_consumed': 0,  # New field for total mAh consumed
+            'last_current_consumed': 0,  # New field to track last current consumed value
         }
         self.last_update_time = time.time()
         self.minutes_since_update = 0
@@ -98,13 +100,55 @@ class OdometerService:
         if not ODOMETER_CSV.exists():
             with open(ODOMETER_CSV, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(['timestamp', 'total_minutes', 'armed_minutes', 'disarmed_minutes', 'battery_swaps', 'startups', 'voltage', 'cpu_temp', 'time_status'])
+                writer.writerow(['timestamp', 'total_minutes', 'armed_minutes', 'disarmed_minutes', 'battery_swaps', 'startups', 'voltage', 'cpu_temp', 'mah_consumed', 'time_status'])
+        else:
+            # Check if this is an old format file and upgrade it if needed
+            self.upgrade_csv_format()
         
         # Set up maintenance CSV file
         if not MAINTENANCE_CSV.exists():
             with open(MAINTENANCE_CSV, 'w', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow(['timestamp', 'event_type', 'details'])
+    
+    def upgrade_csv_format(self):
+        """Upgrade old CSV format to new format if needed"""
+        try:
+            with open(ODOMETER_CSV, 'r', newline='') as f:
+                reader = csv.reader(f)
+                headers = next(reader)  # Get header row
+                
+                # Check if this is an old format file (missing mah_consumed column)
+                if len(headers) < 9 or headers[8] != 'mah_consumed':
+                    logger.info("Detected old format CSV file, upgrading to new format")
+                    
+                    # Read all existing data
+                    rows = []
+                    for row in reader:
+                        rows.append(row)
+                    
+                    # Write back with new format
+                    with open(ODOMETER_CSV, 'w', newline='') as f:
+                        writer = csv.writer(f)
+                        # Write new header row
+                        writer.writerow(['timestamp', 'total_minutes', 'armed_minutes', 'disarmed_minutes', 
+                                       'battery_swaps', 'startups', 'voltage', 'cpu_temp', 'mah_consumed', 'time_status'])
+                        
+                        # Write existing data, adding mah_consumed column with 0.0
+                        for row in rows:
+                            # Pad row with empty values if needed
+                            while len(row) < 8:
+                                row.append('')
+                            # Add mah_consumed column
+                            row.append('0.0')
+                            # Add time_status if missing
+                            if len(row) < 10:
+                                row.append('normal')
+                            writer.writerow(row)
+                    
+                    logger.info("Successfully upgraded CSV file to new format")
+        except Exception as e:
+            logger.error(f"Error upgrading CSV format: {e}")
     
     def load_stats(self):
         """Load the latest stats from the CSV file"""
@@ -118,6 +162,7 @@ class OdometerService:
                 
                 if last_row:
                     with self.stats_lock:
+                        # Basic stats that have always existed
                         self.stats['total_minutes'] = int(last_row[1])
                         self.stats['armed_minutes'] = int(last_row[2])
                         self.stats['disarmed_minutes'] = int(last_row[3])
@@ -126,8 +171,10 @@ class OdometerService:
                         # Handle loading "startups" field if it exists in the CSV
                         if len(last_row) > 5 and last_row[5]:
                             self.stats['startups'] = int(last_row[5])
+                        else:
+                            self.stats['startups'] = 0
                         
-                        # Voltage is now at index 6 if startups field exists
+                        # Voltage is at index 6 if startups field exists
                         if len(last_row) > 6:
                             self.stats['last_voltage'] = float(last_row[6])
                         else:
@@ -139,6 +186,17 @@ class OdometerService:
                                 self.stats['cpu_temp'] = float(last_row[7])
                             except (ValueError, TypeError):
                                 self.stats['cpu_temp'] = 0.0
+                        else:
+                            self.stats['cpu_temp'] = 0.0
+                        
+                        # Load mAh consumed if it exists (index 8)
+                        if len(last_row) > 8 and last_row[8]:
+                            try:
+                                self.stats['total_mah_consumed'] = float(last_row[8])
+                            except (ValueError, TypeError):
+                                self.stats['total_mah_consumed'] = 0.0
+                        else:
+                            self.stats['total_mah_consumed'] = 0.0
     
     def update_loop(self):
         """Main update loop that runs every minute"""
@@ -170,8 +228,8 @@ class OdometerService:
                 minutes_to_add = time_diff_seconds / 60
                 time_status = "normal"
             
-            # Get current voltage and armed status
-            current_voltage, is_armed = self.get_vehicle_status()
+            # Get current voltage, armed status, and current consumed
+            current_voltage, is_armed, current_consumed = self.get_vehicle_status()
             
             # Get current CPU temperature
             current_cpu_temp = self.get_cpu_temperature()
@@ -189,8 +247,10 @@ class OdometerService:
                 # Check for battery swap
                 if current_voltage > (self.stats['last_voltage'] + 1.0) and self.stats['last_voltage'] > 0:
                     self.stats['battery_swaps'] += 1
+                    # Add the current_consumed value to our total - this represents the energy used by the vehicle
+                    self.stats['total_mah_consumed'] += current_consumed
                 
-                # Update last voltage and CPU temperature (only if valid)
+                # Update last voltage and CPU temperature
                 self.stats['last_voltage'] = current_voltage
                 if current_cpu_temp > 0:  # Only update if we got a valid reading
                     self.stats['cpu_temp'] = current_cpu_temp
@@ -213,7 +273,9 @@ class OdometerService:
             writer = csv.writer(f)
             # Only write valid CPU temperature values to CSV
             cpu_temp_value = self.stats['cpu_temp'] if self.stats['cpu_temp'] > 0 else ''
-            writer.writerow([
+            
+            # Create row with all fields
+            row = [
                 datetime.datetime.now().isoformat(),
                 self.stats['total_minutes'],
                 self.stats['armed_minutes'],
@@ -222,37 +284,50 @@ class OdometerService:
                 self.stats['startups'],
                 self.stats['last_voltage'],
                 cpu_temp_value,  # Only write non-zero values
+                self.stats['total_mah_consumed'],  # Add total mAh consumed
                 time_status + (" (startup)" if startup_detected else "")
-            ])
+            ]
+            
+            # Write the row
+            writer.writerow(row)
+            
+            # If this is a new file (just created), write the header row first
+            if ODOMETER_CSV.stat().st_size == len(','.join(row)) + 1:  # +1 for newline
+                f.seek(0)  # Go to start of file
+                writer.writerow(['timestamp', 'total_minutes', 'armed_minutes', 'disarmed_minutes', 
+                                'battery_swaps', 'startups', 'voltage', 'cpu_temp', 'mah_consumed', 'time_status'])
+                f.seek(0, 2)  # Go back to end of file
     
-    def get_vehicle_status(self) -> Tuple[float, bool]:
-        """Get the vehicle's current voltage and armed status from Mavlink2Rest"""
+    def get_vehicle_status(self) -> Tuple[float, bool, float]:
+        """Get the vehicle's current voltage, armed status, and current consumed from Mavlink2Rest"""
         voltage = 0.0
         is_armed = False
+        current_consumed = 0.0
         
         # Try each endpoint until we get a successful response
         for endpoint in MAVLINK_ENDPOINTS:
             try:
-                # Get battery voltage from SYS_STATUS message
-                sys_status_url = f"{endpoint}/SYS_STATUS"
-                logger.info(f"Trying to get SYS_STATUS from {sys_status_url}")
-                sys_status_response = requests.get(sys_status_url, timeout=2)
+                # Get battery status from BATTERY_STATUS message
+                battery_status_url = f"{endpoint}/BATTERY_STATUS"
+                logger.info(f"Trying to get BATTERY_STATUS from {battery_status_url}")
+                battery_status_response = requests.get(battery_status_url, timeout=2)
                 
-                if sys_status_response.status_code == 200:
+                if battery_status_response.status_code == 200:
                     # The structure depends on which endpoint we're using
-                    sys_status_data = sys_status_response.json()
+                    battery_status_data = battery_status_response.json()
                     
                     # Try to handle different response formats
-                    if 'message' in sys_status_data:
-                        sys_status = sys_status_data.get("message", {})
+                    if 'message' in battery_status_data:
+                        battery_status = battery_status_data.get("message", {})
                     else:
-                        sys_status = sys_status_data
+                        battery_status = battery_status_data
                         
-                    # Extract voltage, which might be in different fields depending on the endpoint
-                    if 'voltage_battery' in sys_status:
-                        voltage = sys_status.get("voltage_battery", 0) / 1000.0  # Convert from mV to V
-                    elif 'voltages' in sys_status and len(sys_status.get('voltages', [])) > 0:
-                        voltage = sys_status.get('voltages')[0] / 1000.0
+                    # Extract voltage and current consumed
+                    if 'voltages' in battery_status and len(battery_status.get('voltages', [])) > 0:
+                        voltage = battery_status.get('voltages')[0] / 1000.0  # Convert from mV to V
+                    
+                    if 'current_consumed' in battery_status:
+                        current_consumed = float(battery_status.get('current_consumed', 0))
                     
                     # Get armed status from HEARTBEAT message
                     heartbeat_url = f"{endpoint}/HEARTBEAT"
@@ -277,8 +352,8 @@ class OdometerService:
                             
                         is_armed = bool(base_mode & ARMED_FLAG)  # Check if the ARMED flag is set
                         
-                        logger.info(f"Successfully got vehicle status from {endpoint}: voltage={voltage}V, armed={is_armed}")
-                        return voltage, is_armed
+                        logger.info(f"Successfully got vehicle status from {endpoint}: voltage={voltage}V, armed={is_armed}, current_consumed={current_consumed}mAh")
+                        return voltage, is_armed, current_consumed
             
             except requests.exceptions.RequestException as e:
                 logger.warning(f"Failed to connect to mavlink endpoint {endpoint}: {e}")
@@ -288,7 +363,7 @@ class OdometerService:
                 continue
         
         logger.error(f"Could not get vehicle status from any mavlink endpoint")
-        return voltage, is_armed
+        return voltage, is_armed, current_consumed
     
     def send_stats_to_mavlink(self):
         """Send odometer stats to Mavlink as named float values"""
@@ -297,7 +372,8 @@ class OdometerService:
             "ODO_ARMM": self.stats['armed_minutes'],
             "ODO_DARM": self.stats['disarmed_minutes'],
             "ODO_BSWP": self.stats['battery_swaps'],
-            "ODO_STRT": self.stats['startups']
+            "ODO_STRT": self.stats['startups'],
+            "ODO_MAH": self.stats['total_mah_consumed']  # Add mAh consumed to Mavlink stats
         }
         
         for name, value in stats_to_send.items():
