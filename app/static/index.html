@@ -39,8 +39,29 @@
         <v-app :theme="isDarkMode ? 'dark' : 'light'">
             <v-main>
                 <v-container fluid>
-                    <!-- Stats Section -->
+                    <!-- Move Pie Chart and Logo to top -->
                     <v-row>
+                        <v-col cols="12" md="4" class="d-flex align-center justify-center">
+                            <img src="/static/extension_logo.png" alt="Odometer Logo" style="width: 100%;">
+                        </v-col>
+                        <v-col cols="12" md="8">
+                            <v-card elevation="4">
+                                <v-card-title class="blue-grey white--text">
+                                    <v-icon large color="white" class="mr-2">mdi-chart-pie</v-icon>
+                                    Vehicle Usage Distribution
+                                </v-card-title>
+                                <v-card-text class="text-center pa-5">
+                                    <div style="position: relative; height: 140px; width: 100%; margin: 0 auto; max-width: 350px; z-index: 1; padding: 0;">
+                                        <canvas id="usageChart"></canvas>
+                                    </div>
+                                    <div class="caption mt-4 text-center">Proportion of time spent Armed vs Disarmed</div>
+                                </v-card-text>
+                            </v-card>
+                        </v-col>
+                    </v-row>
+
+                    <!-- Stats Section -->
+                    <v-row class="mt-6">
                         <v-col cols="12" md="4">
                             <v-card class="stat-card" elevation="4">
                                 <v-card-title style="background-color: #135da3" class="white--text">
@@ -129,27 +150,6 @@
                                         {{ stats.total_mah_consumed.toFixed(2) }} Ah
                                     </div>
                                     <div class="caption mt-2">Current battery energy consumed</div>
-                                </v-card-text>
-                            </v-card>
-                        </v-col>
-                    </v-row>
-
-                    <!-- Pie Chart for Armed/Disarmed Time -->
-                    <v-row class="mt-6">
-                        <v-col cols="12" md="4" class="d-flex align-center justify-center">
-                            <img src="/static/extension_logo.png" alt="Odometer Logo" style="width: 100%;">
-                        </v-col>
-                        <v-col cols="12" md="8">
-                            <v-card elevation="4">
-                                <v-card-title class="blue-grey white--text">
-                                    <v-icon large color="white" class="mr-2">mdi-chart-pie</v-icon>
-                                    Vehicle Usage Distribution
-                                </v-card-title>
-                                <v-card-text class="text-center pa-5">
-                                    <div style="position: relative; height: 140px; width: 100%; margin: 0 auto; max-width: 350px; z-index: 1; padding: 0;">
-                                        <canvas id="usageChart"></canvas>
-                                    </div>
-                                    <div class="caption mt-4 text-center">Proportion of time spent Armed vs Disarmed</div>
                                 </v-card-text>
                             </v-card>
                         </v-col>
@@ -1070,6 +1070,7 @@
                                     }
                                 }
                                 
+                                console.log('Total data points loaded:', data.length);
                                 this.historicalData = data;
                                 this.updateHistoryChart();
                             } catch (e) {
@@ -1114,21 +1115,34 @@
                         filteredData.sort((a, b) => a.timestamp - b.timestamp);
                         
                         // Filter based on time range
-                        if (this.timeRange === '15m') {
-                            const cutoffTime = new Date(now.getTime() - (15 * 60 * 1000));
-                            filteredData = filteredData.filter(d => d.timestamp >= cutoffTime);
-                        } else if (this.timeRange === '1h') {
-                            const cutoffTime = new Date(now.getTime() - (60 * 60 * 1000));
-                            filteredData = filteredData.filter(d => d.timestamp >= cutoffTime);
-                        } else if (this.timeRange === '24h') {
-                            const cutoffTime = new Date(now.getTime() - (24 * 60 * 60 * 1000));
-                            filteredData = filteredData.filter(d => d.timestamp >= cutoffTime);
-                        } else if (this.timeRange === '7d') {
-                            const cutoffTime = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
-                            filteredData = filteredData.filter(d => d.timestamp >= cutoffTime);
-                        } else if (this.timeRange === '30d') {
-                            const cutoffTime = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
-                            filteredData = filteredData.filter(d => d.timestamp >= cutoffTime);
+                        if (this.timeRange !== 'all') {
+                            let cutoffTime;
+                            
+                            switch(this.timeRange) {
+                                case '15m':
+                                    cutoffTime = new Date(now.getTime() - (15 * 60 * 1000));
+                                    break;
+                                case '1h':
+                                    cutoffTime = new Date(now.getTime() - (60 * 60 * 1000));
+                                    break;
+                                case '24h':
+                                    cutoffTime = new Date(now.getTime() - (24 * 60 * 60 * 1000));
+                                    break;
+                                case '7d':
+                                    cutoffTime = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
+                                    break;
+                                case '30d':
+                                    cutoffTime = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
+                                    break;
+                            }
+                            
+                            filteredData = filteredData.filter(d => {
+                                // Ensure we're comparing Date objects
+                                const dataTime = d.timestamp instanceof Date ? d.timestamp : new Date(d.timestamp);
+                                return dataTime >= cutoffTime;
+                            });
+                            
+                            console.log(`Filtered to ${filteredData.length} points for ${this.timeRange} range`);
                         }
                         
                         // Ensure we have some data - if not, display a placeholder or message
@@ -1322,6 +1336,11 @@
                                 }
                             });
                         }
+                        
+                        // Before updating chart
+                        console.log('Filtered data points:', filteredData.length);
+                        console.log('First point:', filteredData[0]);
+                        console.log('Last point:', filteredData[filteredData.length - 1]);
                     } catch (e) {
                         console.error("Error updating chart:", e);
                         // Only destroy and recreate as a last resort
