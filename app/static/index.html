@@ -203,9 +203,7 @@
                                         </template>
                                         <div class="text-body-2">
                                             <div class="mb-1"><strong>Graph Controls:</strong></div>
-                                            <div>• Mouse wheel: Zoom in/out</div>
                                             <div>• Click and drag: Create zoom box</div>
-                                            <div>• Ctrl + drag: Pan horizontally</div>
                                             <div>• Reset Zoom button: Return to original view</div>
                                         </div>
                                     </v-tooltip>
@@ -1264,7 +1262,9 @@
                                                 display: true,
                                                 text: 'Time',
                                                 color: textColor
-                                            }
+                                            },
+                                            min: this.getTimeRangeMin(),
+                                            max: this.getTimeRangeMax()
                                         },
                                         'y-temp': {
                                             type: 'linear',
@@ -1345,16 +1345,11 @@
                                         },
                                         zoom: {
                                             pan: {
-                                                enabled: true,
-                                                mode: 'x',
-                                                modifierKey: 'ctrl',
-                                                speed: 10
+                                                enabled: false
                                             },
                                             zoom: {
                                                 enabled: true,
                                                 mode: 'x',
-                                                speed: 0.1,
-                                                sensitivity: 3,
                                                 drag: {
                                                     enabled: true,
                                                     backgroundColor: 'rgba(33, 150, 243, 0.1)',
@@ -1385,14 +1380,30 @@
                     }
                 },
                 
+                getTimeRangeMin() {
+                    const now = new Date();
+                    switch(this.timeRange) {
+                        case '15m': return new Date(now.getTime() - (15 * 60 * 1000));
+                        case '1h': return new Date(now.getTime() - (60 * 60 * 1000));
+                        case '24h': return new Date(now.getTime() - (24 * 60 * 60 * 1000));
+                        case '7d': return new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
+                        case '30d': return new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
+                        default: return null; // For 'all' time range, don't set min
+                    }
+                },
+
+                getTimeRangeMax() {
+                    return new Date(); // Always show up to current time
+                },
+
                 getTimeUnit() {
                     switch(this.timeRange) {
                         case '15m': return 'minute';
                         case '1h': return 'minute';
                         case '24h': return 'hour';
                         case '7d': return 'day';
-                        case '30d': return 'week';
-                        default: return 'month';
+                        case '30d': return 'month';
+                        default: return 'minute';
                     }
                 },
                 
