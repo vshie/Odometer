@@ -1147,14 +1147,11 @@
                         
                         // Prepare data for chart
                         const labels = filteredData.map(d => d.timestamp);
-                        const voltageData = filteredData.map(d => ({
-                            timestamp: d.timestamp,
-                            voltage: d.voltage
-                        }));
+                        const voltageData = filteredData.map(d => d.voltage);
                         
                         // Create a completely separate array of valid temperature data points
                         const validTempPoints = filteredData
-                            .filter(d => d.cpuTemp !== null)
+                            .filter(d => d.cpuTemp !== null && d.cpuTemp > 0)
                             .map(d => ({
                                 x: d.timestamp,
                                 y: d.cpuTemp
@@ -1172,8 +1169,8 @@
                             
                             // Update y-axis scales
                             if (voltageData.length > 0) {
-                                this.historyChart.options.scales['y-voltage'].min = Math.max(0, Math.min(...voltageData.map(d => d.voltage)) - 1);
-                                this.historyChart.options.scales['y-voltage'].max = Math.max(...voltageData.map(d => d.voltage)) + 1;
+                                this.historyChart.options.scales['y-voltage'].min = Math.max(0, Math.min(...voltageData) - 1);
+                                this.historyChart.options.scales['y-voltage'].max = Math.max(...voltageData) + 1;
                             }
                             
                             // Update temperature scales only if we have valid temps
@@ -1196,17 +1193,6 @@
                             // Update the chart
                             this.historyChart.update();
                         } else {
-                            // Set initial min/max for temperature scale
-                            let tempMin = 20;  // Default min temperature
-                            let tempMax = 60;  // Default max temperature
-                            
-                            // If we have valid temperature points, use them
-                            if (validTempPoints.length > 0) {
-                                const tempValues = validTempPoints.map(p => p.y);
-                                tempMin = Math.max(0, Math.min(...tempValues) - 5);
-                                tempMax = Math.max(...tempValues) + 5;
-                            }
-                            
                             // Create new chart
                             this.historyChart = new Chart(ctx, {
                                 type: 'line',
@@ -1221,11 +1207,7 @@
                                             borderWidth: 2,
                                             fill: true,
                                             tension: 0.2,
-                                            yAxisID: 'y-voltage',
-                                            parsing: {
-                                                xAxisKey: 'timestamp',
-                                                yAxisKey: 'voltage'
-                                            }
+                                            yAxisID: 'y-voltage'
                                         },
                                         {
                                             label: 'CPU Temperature (°C)',
@@ -1236,15 +1218,17 @@
                                             fill: true,
                                             tension: 0.2,
                                             yAxisID: 'y-temp',
-                                            parsing: true,
-                                            spanGaps: true
+                                            parsing: {
+                                                xAxisKey: 'x',
+                                                yAxisKey: 'y'
+                                            }
                                         }
                                     ]
                                 },
                                 options: {
                                     responsive: true,
                                     maintainAspectRatio: false,
-                                    animation: { duration: 0 }, // Disable animation for first render
+                                    animation: { duration: 0 },
                                     interaction: {
                                         mode: 'index',
                                         intersect: false
@@ -1268,14 +1252,7 @@
                                             ticks: {
                                                 color: textColor,
                                                 source: 'auto'
-                                            },
-                                            title: {
-                                                display: true,
-                                                text: 'Time',
-                                                color: textColor
-                                            },
-                                            min: this.getTimeRangeMin(),
-                                            max: this.getTimeRangeMax()
+                                            }
                                         },
                                         'y-voltage': {
                                             type: 'linear',
@@ -1292,8 +1269,8 @@
                                                 text: 'Battery Voltage (V)',
                                                 color: textColor
                                             },
-                                            min: Math.max(0, Math.min(...voltageData.map(d => d.voltage)) - 1),
-                                            max: Math.max(...voltageData.map(d => d.voltage)) + 1
+                                            min: Math.max(0, Math.min(...voltageData) - 1),
+                                            max: Math.max(...voltageData) + 1
                                         },
                                         'y-temp': {
                                             type: 'linear',
@@ -1310,44 +1287,11 @@
                                                 text: 'CPU Temperature (°C)',
                                                 color: textColor
                                             },
-                                            min: tempMin,
-                                            max: tempMax
+                                            min: Math.max(0, Math.min(...validTempPoints.map(p => p.y)) - 5),
+                                            max: Math.max(...validTempPoints.map(p => p.y)) + 5
                                         }
                                     },
                                     plugins: {
-                                        legend: {
-                                            display: true,
-                                            position: 'top',
-                                            labels: {
-                                                color: textColor
-                                            }
-                                        },
-                                        tooltip: {
-                                            enabled: true,
-                                            mode: 'index',
-                                            intersect: false,
-                                            callbacks: {
-                                                title: function(context) {
-                                                    const date = new Date(context[0].parsed.x);
-                                                    return date.toLocaleString();
-                                                },
-                                                label: function(context) {
-                                                    if (context.dataset.label.includes('Temperature')) {
-                                                        if (context.raw && context.raw.y > 0) {
-                                                            return `CPU Temperature: ${context.raw.y.toFixed(1)}°C`;
-                                                        }
-                                                        return null;
-                                                    }
-                                                    
-                                                    if (context.dataset.label.includes('Voltage')) {
-                                                        if (context.parsed.y !== null) {
-                                                            return `Battery Voltage: ${context.parsed.y.toFixed(1)}V`;
-                                                        }
-                                                    }
-                                                    return null;
-                                                }
-                                            }
-                                        },
                                         zoom: {
                                             limits: {
                                                 x: {min: 'original', max: 'original'},
