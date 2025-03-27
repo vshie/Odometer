@@ -28,6 +28,8 @@ LABEL permissions='\
     "7042/tcp": {}\
   },\
   "HostConfig": {\
+    "CpuPeriod": 100000,\
+    "CpuQuota": 20000,\
     "Binds":["/usr/blueos/extensions/odometer/data:/app/data", "/usr/blueos/extensions/$IMAGE_NAME/logs:/app/logs"],\
     "ExtraHosts": ["host.docker.internal:host-gateway"],\
     "PortBindings": {\
