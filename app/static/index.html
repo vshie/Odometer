@@ -186,6 +186,29 @@
                                         <v-btn value="30d">30 Days</v-btn>
                                         <v-btn value="all">All Time</v-btn>
                                     </v-btn-toggle>
+                                    <v-btn class="ml-2" @click="resetZoom" small>
+                                        <v-icon left>mdi-refresh</v-icon>
+                                        Reset Zoom
+                                    </v-btn>
+                                    <v-tooltip bottom>
+                                        <template v-slot:activator="{ on, attrs }">
+                                            <v-icon
+                                                class="ml-2"
+                                                v-bind="attrs"
+                                                v-on="on"
+                                                color="primary"
+                                            >
+                                                mdi-help-circle
+                                            </v-icon>
+                                        </template>
+                                        <div class="text-body-2">
+                                            <div class="mb-1"><strong>Graph Controls:</strong></div>
+                                            <div>• Mouse wheel: Zoom in/out</div>
+                                            <div>• Click and drag: Create zoom box</div>
+                                            <div>• Ctrl + drag: Pan horizontally</div>
+                                            <div>• Reset Zoom button: Return to original view</div>
+                                        </div>
+                                    </v-tooltip>
                                 </v-card-actions>
                             </v-card>
                         </v-col>
@@ -485,6 +508,7 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/moment@2.29.4/moment.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@1.0.1/dist/chartjs-adapter-moment.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
     <script>
         new Vue({
             el: '#app',
@@ -994,9 +1018,10 @@
                     
                     this.loading = true;
                     
-                    // Use a direct XMLHttpRequest approach for better CSV handling
+                    // Add timestamp to prevent caching
+                    const timestamp = new Date().getTime();
                     const xhr = new XMLHttpRequest();
-                    xhr.open('GET', '/download/odometer', true);
+                    xhr.open('GET', `/download/odometer?t=${timestamp}`, true);
                     xhr.responseType = 'text';
                     
                     // Keep track of when this request started to avoid race conditions
@@ -1013,7 +1038,6 @@
                                 const timestampIndex = headers.indexOf('timestamp');
                                 const voltageIndex = headers.indexOf('voltage');
                                 const cpuTempIndex = headers.indexOf('cpu_temp');
-                                const mahIndex = headers.indexOf('mah_consumed');
                                 
                                 if (timestampIndex === -1 || voltageIndex === -1) {
                                     throw new Error('Required columns not found in CSV data');
@@ -1037,22 +1061,12 @@
                                                 cpuTemp = tempValue;
                                             }
                                         }
-
-                                        // Parse mAh consumed value
-                                        let mahConsumed = 0;
-                                        if (mahIndex !== -1 && values[mahIndex] && values[mahIndex].trim() !== '') {
-                                            const mahValue = parseFloat(values[mahIndex]);
-                                            if (!isNaN(mahValue)) {
-                                                mahConsumed = mahValue; // Value is already in Ah
-                                            }
-                                        }
                                         
                                         if (!isNaN(voltage) && !isNaN(timestamp.getTime())) {
                                             data.push({
                                                 timestamp,
                                                 voltage,
-                                                cpuTemp,
-                                                mah_consumed: mahConsumed
+                                                cpuTemp
                                             });
                                         }
                                     }
@@ -1138,7 +1152,6 @@
                         const voltageData = filteredData.map(d => d.voltage);
                         
                         // Create a completely separate array of valid temperature data points
-                        // This ensures that only points with valid temperature readings are plotted
                         const validTempPoints = filteredData
                             .filter(d => d.cpuTemp !== null)
                             .map(d => ({ x: d.timestamp, y: d.cpuTemp }));
@@ -1329,6 +1342,26 @@
                                                     return null;
                                                 }
                                             }
+                                        },
+                                        zoom: {
+                                            pan: {
+                                                enabled: true,
+                                                mode: 'x',
+                                                modifierKey: 'ctrl',
+                                                speed: 10
+                                            },
+                                            zoom: {
+                                                enabled: true,
+                                                mode: 'x',
+                                                speed: 0.1,
+                                                sensitivity: 3,
+                                                drag: {
+                                                    enabled: true,
+                                                    backgroundColor: 'rgba(33, 150, 243, 0.1)',
+                                                    borderColor: '#2196F3',
+                                                    borderWidth: 1
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1477,6 +1510,11 @@
                         this.deleteDialog.show = false;
                         this.resetDeleteDialog();
                     });
+                },
+                resetZoom() {
+                    if (this.historyChart) {
+                        this.historyChart.resetZoom();
+                    }
                 }
             }
         });
