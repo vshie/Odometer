@@ -1101,26 +1101,39 @@
                     if (!ctx || this.historicalData.length === 0) return;
                     
                     try {
-                        // Get current time and time range limits first
-                        const now = new Date();
+                        // Get time range limits first
                         const timeRangeMin = this.getTimeRangeMin();
                         const timeRangeMax = this.getTimeRangeMax();
 
-                        // Convert timestamps and filter data based on time range
+                        console.log('Raw data points:', this.historicalData.length);
+                        console.log('First timestamp:', this.historicalData[0]?.timestamp);
+                        console.log('Last timestamp:', this.historicalData[this.historicalData.length-1]?.timestamp);
+                        console.log('Time range:', this.timeRange);
+                        console.log('Range min:', timeRangeMin);
+                        console.log('Range max:', timeRangeMax);
+
+                        // Convert timestamps and filter data
                         let filteredData = this.historicalData
-                            .map(d => ({
-                                ...d,
-                                timestamp: d.timestamp instanceof Date ? d.timestamp : new Date(d.timestamp)
-                            }))
+                            .map(d => {
+                                const timestamp = d.timestamp instanceof Date ? d.timestamp : new Date(d.timestamp);
+                                // Convert to local time
+                                const localTimestamp = new Date(timestamp.getTime() - (timestamp.getTimezoneOffset() * 60000));
+                                return {
+                                    ...d,
+                                    timestamp: localTimestamp
+                                };
+                            })
                             .filter(d => {
                                 if (this.timeRange === 'all') return true;
                                 return d.timestamp >= timeRangeMin && d.timestamp <= timeRangeMax;
                             })
                             .sort((a, b) => a.timestamp - b.timestamp);
 
-                        console.log(`Time range: ${this.timeRange}`);
-                        console.log(`Filtered data points: ${filteredData.length}`);
-                        console.log(`Range: ${timeRangeMin} to ${timeRangeMax}`);
+                        console.log('Filtered data points:', filteredData.length);
+                        if (filteredData.length > 0) {
+                            console.log('First filtered point:', filteredData[0].timestamp);
+                            console.log('Last filtered point:', filteredData[filteredData.length-1].timestamp);
+                        }
 
                         // Prepare chart configuration
                         const chartConfig = {
@@ -1267,19 +1280,32 @@
                 },
                 
                 getTimeRangeMin() {
-                    const now = new Date();
+                    const maxTime = this.getTimeRangeMax();
+                    const offset = maxTime.getTimezoneOffset() * 60000; // Convert minutes to milliseconds
+                    
                     switch(this.timeRange) {
-                        case '15m': return new Date(now.getTime() - (15 * 60 * 1000));
-                        case '1h': return new Date(now.getTime() - (60 * 60 * 1000));
-                        case '24h': return new Date(now.getTime() - (24 * 60 * 60 * 1000));
-                        case '7d': return new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
-                        case '30d': return new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
-                        default: return null; // For 'all' time range, don't set min
+                        case '15m': return new Date(maxTime.getTime() - (15 * 60 * 1000));
+                        case '1h': return new Date(maxTime.getTime() - (60 * 60 * 1000));
+                        case '24h': return new Date(maxTime.getTime() - (24 * 60 * 60 * 1000));
+                        case '7d': return new Date(maxTime.getTime() - (7 * 24 * 60 * 60 * 1000));
+                        case '30d': return new Date(maxTime.getTime() - (30 * 24 * 60 * 60 * 1000));
+                        default: return null; // For 'all' time range
                     }
                 },
 
                 getTimeRangeMax() {
-                    return new Date(); // Always show up to current time
+                    // Use the most recent data point's local time
+                    if (this.historicalData && this.historicalData.length > 0) {
+                        const timestamps = this.historicalData.map(d => {
+                            const date = d.timestamp instanceof Date ? d.timestamp : new Date(d.timestamp);
+                            // Convert to local time
+                            return new Date(date.getTime() - (date.getTimezoneOffset() * 60000));
+                        });
+                        return new Date(Math.max(...timestamps));
+                    }
+                    // Use local current time
+                    const now = new Date();
+                    return new Date(now.getTime() - (now.getTimezoneOffset() * 60000));
                 },
 
                 getTimeUnit() {
