@@ -1101,260 +1101,167 @@
                     if (!ctx || this.historicalData.length === 0) return;
                     
                     try {
-                        // Filter data based on selected time range
+                        // Get current time and time range limits first
                         const now = new Date();
-                        let filteredData = [...this.historicalData];
-                        
-                        // Convert timestamps to Date objects if they aren't already
-                        filteredData = filteredData.map(d => ({
-                            ...d,
-                            timestamp: d.timestamp instanceof Date ? d.timestamp : new Date(d.timestamp)
-                        }));
-                        
-                        // Sort data by timestamp
-                        filteredData.sort((a, b) => a.timestamp - b.timestamp);
-                        
-                        // Filter based on time range
-                        if (this.timeRange !== 'all') {
-                            let cutoffTime;
-                            
-                            switch(this.timeRange) {
-                                case '15m':
-                                    cutoffTime = new Date(now.getTime() - (15 * 60 * 1000));
-                                    break;
-                                case '1h':
-                                    cutoffTime = new Date(now.getTime() - (60 * 60 * 1000));
-                                    break;
-                                case '24h':
-                                    cutoffTime = new Date(now.getTime() - (24 * 60 * 60 * 1000));
-                                    break;
-                                case '7d':
-                                    cutoffTime = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
-                                    break;
-                                case '30d':
-                                    cutoffTime = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
-                                    break;
-                            }
-                            
-                            filteredData = filteredData.filter(d => {
-                                // Ensure we're comparing Date objects
-                                const dataTime = d.timestamp instanceof Date ? d.timestamp : new Date(d.timestamp);
-                                return dataTime >= cutoffTime;
-                            });
-                            
-                            console.log(`Filtered to ${filteredData.length} points for ${this.timeRange} range`);
-                        }
-                        
-                        // Ensure we have some data - if not, display a placeholder or message
-                        if (filteredData.length === 0) {
-                            // If no data for selected time range, show message
-                            this.showSnackbar('No data available for selected time range', 'info');
-                            return;
-                        }
-                        
-                        // Sample data if we have too many points (improves performance)
-                        const maxPoints = 500;
-                        if (filteredData.length > maxPoints) {
-                            const sampleInterval = Math.floor(filteredData.length / maxPoints);
-                            filteredData = filteredData.filter((_, i) => i % sampleInterval === 0);
-                        }
-                        
-                        // Prepare data for chart
-                        const labels = filteredData.map(d => d.timestamp);
-                        const voltageData = filteredData.map(d => d.voltage);
-                        
-                        // Create a completely separate array of valid temperature data points
-                        const validTempPoints = filteredData
-                            .filter(d => d.cpuTemp !== null && d.cpuTemp > 0)
+                        const timeRangeMin = this.getTimeRangeMin();
+                        const timeRangeMax = this.getTimeRangeMax();
+
+                        // Convert timestamps and filter data based on time range
+                        let filteredData = this.historicalData
                             .map(d => ({
-                                x: d.timestamp,
-                                y: d.cpuTemp
-                            }));
-                        
-                        // Theme-aware grid and text colors
-                        const textColor = this.isDarkMode ? '#ffffff' : '#666666';
-                        const gridColor = this.isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
-                        
-                        if (this.historyChart) {
-                            // Update existing chart with minimal redraw
-                            this.historyChart.data.labels = labels;
-                            this.historyChart.data.datasets[0].data = voltageData;
-                            this.historyChart.data.datasets[1].data = validTempPoints;
-                            
-                            // Update y-axis scales
-                            if (voltageData.length > 0) {
-                                this.historyChart.options.scales['y-voltage'].min = Math.max(0, Math.min(...voltageData) - 1);
-                                this.historyChart.options.scales['y-voltage'].max = Math.max(...voltageData) + 1;
-                            }
-                            
-                            // Update temperature scales only if we have valid temps
-                            if (validTempPoints.length > 0) {
-                                const tempValues = validTempPoints.map(p => p.y);
-                                this.historyChart.options.scales['y-temp'].min = Math.max(0, Math.min(...tempValues) - 5);
-                                this.historyChart.options.scales['y-temp'].max = Math.max(...tempValues) + 5;
-                            }
-                            
-                            // Update colors for dark/light mode
-                            this.historyChart.options.scales.x.grid.color = gridColor;
-                            this.historyChart.options.scales.x.ticks.color = textColor;
-                            this.historyChart.options.scales['y-voltage'].grid.color = gridColor;
-                            this.historyChart.options.scales['y-voltage'].ticks.color = textColor;
-                            this.historyChart.options.scales['y-temp'].grid.color = gridColor;
-                            this.historyChart.options.scales['y-temp'].ticks.color = textColor;
-                            
-                            // Use a short animation duration for updates (250ms)
-                            this.historyChart.options.animation.duration = 250;
-                            // Update the chart
-                            this.historyChart.update();
-                        } else {
-                            // Create new chart
-                            this.historyChart = new Chart(ctx, {
-                                type: 'line',
-                                data: {
-                                    labels: labels,
-                                    datasets: [
-                                        {
-                                            label: 'Battery Voltage (V)',
-                                            data: voltageData,
-                                            borderColor: '#673AB7',
-                                            backgroundColor: 'rgba(103, 58, 183, 0.1)',
-                                            borderWidth: 2,
-                                            fill: true,
-                                            tension: 0.2,
-                                            yAxisID: 'y-voltage'
-                                        },
-                                        {
-                                            label: 'CPU Temperature (°C)',
-                                            data: validTempPoints,
-                                            borderColor: '#F44336',
-                                            backgroundColor: 'rgba(244, 67, 54, 0.1)',
-                                            borderWidth: 2,
-                                            fill: true,
-                                            tension: 0.2,
-                                            yAxisID: 'y-temp',
-                                            parsing: {
-                                                xAxisKey: 'x',
-                                                yAxisKey: 'y'
+                                ...d,
+                                timestamp: d.timestamp instanceof Date ? d.timestamp : new Date(d.timestamp)
+                            }))
+                            .filter(d => {
+                                if (this.timeRange === 'all') return true;
+                                return d.timestamp >= timeRangeMin && d.timestamp <= timeRangeMax;
+                            })
+                            .sort((a, b) => a.timestamp - b.timestamp);
+
+                        console.log(`Time range: ${this.timeRange}`);
+                        console.log(`Filtered data points: ${filteredData.length}`);
+                        console.log(`Range: ${timeRangeMin} to ${timeRangeMax}`);
+
+                        // Prepare chart configuration
+                        const chartConfig = {
+                            type: 'line',
+                            data: {
+                                labels: filteredData.map(d => d.timestamp),
+                                datasets: [
+                                    {
+                                        label: 'Battery Voltage (V)',
+                                        data: filteredData.map(d => ({
+                                            x: d.timestamp,
+                                            y: d.voltage
+                                        })),
+                                        borderColor: '#673AB7',
+                                        backgroundColor: 'rgba(103, 58, 183, 0.1)',
+                                        borderWidth: 2,
+                                        fill: true,
+                                        tension: 0.2,
+                                        yAxisID: 'y-voltage'
+                                    },
+                                    {
+                                        label: 'CPU Temperature (°C)',
+                                        data: filteredData
+                                            .filter(d => d.cpuTemp !== null && d.cpuTemp > 0)
+                                            .map(d => ({
+                                                x: d.timestamp,
+                                                y: d.cpuTemp
+                                            })),
+                                        borderColor: '#F44336',
+                                        backgroundColor: 'rgba(244, 67, 54, 0.1)',
+                                        borderWidth: 2,
+                                        fill: true,
+                                        tension: 0.2,
+                                        yAxisID: 'y-temp'
+                                    }
+                                ]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                animation: { duration: 0 },
+                                scales: {
+                                    x: {
+                                        type: 'time',
+                                        time: {
+                                            unit: this.getTimeUnit(),
+                                            displayFormats: {
+                                                minute: 'HH:mm',
+                                                hour: 'HH:mm',
+                                                day: 'MMM D',
+                                                week: 'MMM D',
+                                                month: 'MMM YYYY'
                                             }
+                                        },
+                                        min: timeRangeMin,
+                                        max: timeRangeMax,
+                                        ticks: {
+                                            source: 'auto',
+                                            autoSkip: true
                                         }
-                                    ]
+                                    },
+                                    'y-voltage': {
+                                        type: 'linear',
+                                        position: 'right',
+                                        grid: {
+                                            color: 'rgba(255, 255, 255, 0.1)',
+                                            drawOnChartArea: false
+                                        },
+                                        ticks: {
+                                            color: 'rgba(255, 255, 255, 0.8)'
+                                        },
+                                        title: {
+                                            display: true,
+                                            text: 'Battery Voltage (V)',
+                                            color: 'rgba(255, 255, 255, 0.8)'
+                                        },
+                                        min: Math.max(0, Math.min(...filteredData.map(d => d.voltage)) - 1),
+                                        max: Math.max(...filteredData.map(d => d.voltage)) + 1
+                                    },
+                                    'y-temp': {
+                                        type: 'linear',
+                                        position: 'left',
+                                        grid: {
+                                            color: 'rgba(255, 255, 255, 0.1)',
+                                            drawOnChartArea: true
+                                        },
+                                        ticks: {
+                                            color: 'rgba(255, 255, 255, 0.8)'
+                                        },
+                                        title: {
+                                            display: true,
+                                            text: 'CPU Temperature (°C)',
+                                            color: 'rgba(255, 255, 255, 0.8)'
+                                        },
+                                        min: Math.max(0, Math.min(...filteredData.filter(d => d.cpuTemp !== null && d.cpuTemp > 0).map(d => d.cpuTemp)) - 5),
+                                        max: Math.max(...filteredData.filter(d => d.cpuTemp !== null && d.cpuTemp > 0).map(d => d.cpuTemp)) + 5
+                                    }
                                 },
-                                options: {
-                                    responsive: true,
-                                    maintainAspectRatio: false,
-                                    animation: { duration: 0 },
-                                    interaction: {
-                                        mode: 'index',
-                                        intersect: false
-                                    },
-                                    scales: {
-                                        x: {
-                                            type: 'time',
-                                            time: {
-                                                unit: this.getTimeUnit(),
-                                                displayFormats: {
-                                                    minute: 'HH:mm',
-                                                    hour: 'HH:mm',
-                                                    day: 'MMM d',
-                                                    week: 'MMM d',
-                                                    month: 'MMM yyyy'
-                                                }
-                                            },
-                                            grid: {
-                                                color: gridColor
-                                            },
-                                            ticks: {
-                                                color: textColor,
-                                                source: 'auto'
-                                            }
+                                plugins: {
+                                    zoom: {
+                                        limits: {
+                                            x: {min: timeRangeMin, max: timeRangeMax},
+                                            y: {min: 'original', max: 'original'}
                                         },
-                                        'y-voltage': {
-                                            type: 'linear',
-                                            position: 'right',
-                                            grid: {
-                                                color: gridColor,
-                                                drawOnChartArea: false
-                                            },
-                                            ticks: {
-                                                color: textColor
-                                            },
-                                            title: {
-                                                display: true,
-                                                text: 'Battery Voltage (V)',
-                                                color: textColor
-                                            },
-                                            min: Math.max(0, Math.min(...voltageData) - 1),
-                                            max: Math.max(...voltageData) + 1
-                                        },
-                                        'y-temp': {
-                                            type: 'linear',
-                                            position: 'left',
-                                            grid: {
-                                                color: gridColor,
-                                                drawOnChartArea: true
-                                            },
-                                            ticks: {
-                                                color: textColor
-                                            },
-                                            title: {
-                                                display: true,
-                                                text: 'CPU Temperature (°C)',
-                                                color: textColor
-                                            },
-                                            min: Math.max(0, Math.min(...validTempPoints.map(p => p.y)) - 5),
-                                            max: Math.max(...validTempPoints.map(p => p.y)) + 5
-                                        }
-                                    },
-                                    plugins: {
                                         zoom: {
-                                            limits: {
-                                                x: {min: 'original', max: 'original'},
-                                                y: {min: 'original', max: 'original'}
+                                            wheel: {
+                                                enabled: false
                                             },
-                                            pan: {
+                                            pinch: {
+                                                enabled: false
+                                            },
+                                            drag: {
                                                 enabled: true,
-                                                mode: 'x'
+                                                backgroundColor: 'rgba(33, 150, 243, 0.1)',
+                                                borderColor: '#2196F3',
+                                                borderWidth: 1,
+                                                threshold: 10
                                             },
-                                            zoom: {
-                                                wheel: {
-                                                    enabled: false
-                                                },
-                                                pinch: {
-                                                    enabled: false
-                                                },
-                                                drag: {
-                                                    enabled: true,
-                                                    backgroundColor: 'rgba(33, 150, 243, 0.1)',
-                                                    borderColor: '#2196F3',
-                                                    borderWidth: 1,
-                                                    threshold: 10
-                                                },
-                                                mode: 'x'
-                                            }
+                                            mode: 'x'
                                         }
                                     }
                                 }
-                            });
+                            }
+                        };
+
+                        if (this.historyChart) {
+                            // Update existing chart
+                            this.historyChart.data = chartConfig.data;
+                            this.historyChart.options.scales.x.min = timeRangeMin;
+                            this.historyChart.options.scales.x.max = timeRangeMax;
+                            this.historyChart.update('none');
+                        } else {
+                            // Create new chart
+                            this.historyChart = new Chart(ctx, chartConfig);
                         }
-                        
-                        // Before updating chart
-                        console.log('Filtered data points:', filteredData.length);
-                        console.log('First point:', filteredData[0]);
-                        console.log('Last point:', filteredData[filteredData.length - 1]);
+
                     } catch (e) {
                         console.error("Error updating chart:", e);
-                        // Only destroy and recreate as a last resort
-                        if (e.message && e.message.includes('scales')) {
-                            try {
-                                if (this.historyChart) {
-                                    this.historyChart.destroy();
-                                    this.historyChart = null;
-                                }
-                                // Call updateHistoryChart again to recreate the chart
-                                this.$nextTick(() => this.updateHistoryChart());
-                            } catch (destroyError) {
-                                console.error("Error destroying chart:", destroyError);
-                            }
+                        if (this.historyChart) {
+                            this.historyChart.destroy();
+                            this.historyChart = null;
                         }
                     }
                 },
