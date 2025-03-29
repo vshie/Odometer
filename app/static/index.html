@@ -143,13 +143,17 @@
                             <v-card class="stat-card" elevation="4">
                                 <v-card-title style="background-color: #135da3" class="white--text">
                                     <v-icon large color="white" class="mr-2">mdi-battery-charging</v-icon>
-                                    Total Energy Consumed
+                                    Energy Consumed
                                 </v-card-title>
                                 <v-card-text class="text-center pa-5">
                                     <div class="number-display">
-                                        {{ stats.total_wh_consumed.toFixed(2) }} Wh
+                                        {{ stats.current_battery_wh.toFixed(2) }} Wh
                                     </div>
-                                    <div class="caption mt-2">Total energy consumed (watt-hours)</div>
+                                    <div class="caption mt-2">Current battery energy consumed</div>
+                                    <div class="caption mt-1">
+                                        <v-icon small>mdi-history</v-icon>
+                                        Lifetime: {{ stats.total_wh_consumed.toFixed(2) }} Wh
+                                    </div>
                                 </v-card-text>
                             </v-card>
                         </v-col>
@@ -525,8 +529,8 @@
                         battery_swaps: 0,
                         last_voltage: 0.0,
                         cpu_temp: 0.0,
-                        total_mah_consumed: 0,  // Keep for backward compatibility
-                        total_wh_consumed: 0.0  // New field for watt-hours consumed
+                        total_wh_consumed: 0.0,  // Total lifetime watt-hours
+                        current_battery_wh: 0.0,  // Current battery watt-hours
                     },
                     maintenanceLog: [],
                     maintenanceHeaders: [

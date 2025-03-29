@@ -62,10 +62,10 @@ class OdometerService:
             'startups': 0,
             'last_voltage': 0.0,
             'cpu_temp': 0.0,
-            'total_wh_consumed': 0.0,  # New field for total watt-hours consumed
-            'last_current_consumed': 0,  # Keep for backward compatibility
-            'voltage_sum': 0.0,  # New field to track sum of voltages for averaging
-            'voltage_count': 0,  # New field to track number of voltage readings
+            'total_wh_consumed': 0.0,  # Total lifetime watt-hours
+            'current_battery_wh': 0.0,  # Current battery watt-hours
+            'voltage_sum': 0.0,  # Sum of voltages for averaging
+            'voltage_count': 0,  # Number of voltage readings
         }
         self.last_update_time = time.time()
         self.minutes_since_update = 0
@@ -309,27 +309,26 @@ class OdometerService:
                 if current_voltage > 0:
                     self.stats['voltage_sum'] += current_voltage
                     self.stats['voltage_count'] += 1
+                    
+                    # Calculate watt-hours for this minute
+                    if self.stats['voltage_count'] > 0:
+                        avg_voltage = self.stats['voltage_sum'] / self.stats['voltage_count']
+                        # current_consumed is in mAh, convert to Ah and multiply by average voltage
+                        wh_consumed = (current_consumed / 1000.0) * avg_voltage
+                        self.stats['current_battery_wh'] += wh_consumed
                 
                 # Check for battery swap
                 if current_voltage > (self.stats['last_voltage'] + 1.0) and self.stats['last_voltage'] > 0:
                     self.stats['battery_swaps'] += 1
                     
-                    # Calculate average voltage for this battery pack
-                    if self.stats['voltage_count'] > 0:
-                        avg_voltage = self.stats['voltage_sum'] / self.stats['voltage_count']
-                        # Calculate watt-hours for this battery pack
-                        # current_consumed is in mAh, convert to Ah and multiply by average voltage
-                        wh_consumed = (current_consumed / 1000.0) * avg_voltage
-                        self.stats['total_wh_consumed'] += wh_consumed
-                        logger.info(f"Battery swap detected! Current consumed: {current_consumed}mAh, Avg voltage: {avg_voltage:.2f}V, Wh consumed: {wh_consumed:.2f}Wh")
+                    # Add current battery's watt-hours to total lifetime watt-hours
+                    self.stats['total_wh_consumed'] += self.stats['current_battery_wh']
+                    logger.info(f"Battery swap detected! Current battery Wh: {self.stats['current_battery_wh']:.2f}Wh, Total lifetime Wh: {self.stats['total_wh_consumed']:.2f}Wh")
                     
-                    # Reset voltage tracking for next battery pack
+                    # Reset current battery watt-hours
+                    self.stats['current_battery_wh'] = 0.0
                     self.stats['voltage_sum'] = 0.0
                     self.stats['voltage_count'] = 0
-                
-                # Always update the total mAh consumed with the current value (for backward compatibility)
-                self.stats['total_mah_consumed'] = current_consumed / 1000  # Convert cAh to Ah
-                self.stats['last_current_consumed'] = current_consumed / 1000  # Convert cAh to Ah
                 
                 # Update last voltage and CPU temperature
                 self.stats['last_voltage'] = current_voltage
