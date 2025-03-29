@@ -313,9 +313,11 @@ class OdometerService:
                     # Calculate watt-hours for this minute
                     if self.stats['voltage_count'] > 0:
                         avg_voltage = self.stats['voltage_sum'] / self.stats['voltage_count']
-                        # current_consumed is in mAh, convert to Ah and multiply by average voltage
-                        wh_consumed = (current_consumed / 1000.0) * avg_voltage
-                        self.stats['current_battery_wh'] += wh_consumed
+                        # current_consumed is total mAh since startup
+                        # Convert to Ah and multiply by voltage to get total watt-hours
+                        wh_consumed = (abs(current_consumed) / 1000.0) * avg_voltage
+                        self.stats['current_battery_wh'] = wh_consumed  # Set directly since it's total consumption
+                        logger.debug(f"Total mAh consumed: {abs(current_consumed)}mAh, Voltage: {avg_voltage:.2f}V, Total Wh: {wh_consumed:.2f}Wh")
                 
                 # Check for battery swap
                 if current_voltage > (self.stats['last_voltage'] + 1.0) and self.stats['last_voltage'] > 0:
