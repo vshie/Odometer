@@ -62,8 +62,10 @@ class OdometerService:
             'startups': 0,
             'last_voltage': 0.0,
             'cpu_temp': 0.0,
-            'total_mah_consumed': 0,  # New field for total mAh consumed
-            'last_current_consumed': 0,  # New field to track last current consumed value
+            'total_wh_consumed': 0.0,  # New field for total watt-hours consumed
+            'last_current_consumed': 0,  # Keep for backward compatibility
+            'voltage_sum': 0.0,  # New field to track sum of voltages for averaging
+            'voltage_count': 0,  # New field to track number of voltage readings
         }
         self.last_update_time = time.time()
         self.minutes_since_update = 0
@@ -100,7 +102,7 @@ class OdometerService:
         if not ODOMETER_CSV.exists():
             with open(ODOMETER_CSV, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(['timestamp', 'total_minutes', 'armed_minutes', 'disarmed_minutes', 'battery_swaps', 'startups', 'voltage', 'cpu_temp', 'mah_consumed', 'time_status'])
+                writer.writerow(['timestamp', 'total_minutes', 'armed_minutes', 'disarmed_minutes', 'battery_swaps', 'startups', 'voltage', 'cpu_temp', 'wh_consumed', 'time_status'])
         else:
             # Check if this is an old format file and upgrade it if needed
             self.upgrade_csv_format()
@@ -118,8 +120,8 @@ class OdometerService:
                 reader = csv.reader(f)
                 headers = next(reader)  # Get header row
                 
-                # Check if this is an old format file (missing mah_consumed column)
-                if len(headers) < 9 or headers[8] != 'mah_consumed':
+                # Check if this is an old format file (missing wh_consumed column)
+                if len(headers) < 10 or headers[9] != 'wh_consumed':
                     logger.info("Detected old format CSV file, upgrading to new format")
                     
                     # Read all existing data
@@ -132,17 +134,17 @@ class OdometerService:
                         writer = csv.writer(f)
                         # Write new header row
                         writer.writerow(['timestamp', 'total_minutes', 'armed_minutes', 'disarmed_minutes', 
-                                       'battery_swaps', 'startups', 'voltage', 'cpu_temp', 'mah_consumed', 'time_status'])
+                                       'battery_swaps', 'startups', 'voltage', 'cpu_temp', 'wh_consumed', 'time_status'])
                         
-                        # Write existing data, adding mah_consumed column with 0.0
+                        # Write existing data, adding wh_consumed column with 0.0
                         for row in rows:
                             # Pad row with empty values if needed
-                            while len(row) < 8:
+                            while len(row) < 9:
                                 row.append('')
-                            # Add mah_consumed column
+                            # Add wh_consumed column
                             row.append('0.0')
                             # Add time_status if missing
-                            if len(row) < 10:
+                            if len(row) < 11:
                                 row.append('normal')
                             writer.writerow(row)
                     
@@ -303,12 +305,29 @@ class OdometerService:
                 else:
                     self.stats['disarmed_minutes'] += 1
                 
+                # Update voltage tracking for averaging
+                if current_voltage > 0:
+                    self.stats['voltage_sum'] += current_voltage
+                    self.stats['voltage_count'] += 1
+                
                 # Check for battery swap
                 if current_voltage > (self.stats['last_voltage'] + 1.0) and self.stats['last_voltage'] > 0:
                     self.stats['battery_swaps'] += 1
-                    logger.info(f"Battery swap detected! Current consumed: {current_consumed}mAh")
+                    
+                    # Calculate average voltage for this battery pack
+                    if self.stats['voltage_count'] > 0:
+                        avg_voltage = self.stats['voltage_sum'] / self.stats['voltage_count']
+                        # Calculate watt-hours for this battery pack
+                        # current_consumed is in mAh, convert to Ah and multiply by average voltage
+                        wh_consumed = (current_consumed / 1000.0) * avg_voltage
+                        self.stats['total_wh_consumed'] += wh_consumed
+                        logger.info(f"Battery swap detected! Current consumed: {current_consumed}mAh, Avg voltage: {avg_voltage:.2f}V, Wh consumed: {wh_consumed:.2f}Wh")
+                    
+                    # Reset voltage tracking for next battery pack
+                    self.stats['voltage_sum'] = 0.0
+                    self.stats['voltage_count'] = 0
                 
-                # Always update the total mAh consumed with the current value
+                # Always update the total mAh consumed with the current value (for backward compatibility)
                 self.stats['total_mah_consumed'] = current_consumed / 1000  # Convert cAh to Ah
                 self.stats['last_current_consumed'] = current_consumed / 1000  # Convert cAh to Ah
                 
@@ -346,7 +365,8 @@ class OdometerService:
                 str(self.stats['startups']),
                 str(self.stats['last_voltage']),
                 cpu_temp_value,  # Only write non-zero values
-                str(self.stats['total_mah_consumed']),  # Add total mAh consumed
+                str(self.stats['total_mah_consumed']),  # Keep for backward compatibility
+                str(self.stats['total_wh_consumed']),  # Add total watt-hours consumed
                 time_status + (" (startup)" if startup_detected else "")
             ]
             
@@ -357,7 +377,7 @@ class OdometerService:
             if ODOMETER_CSV.stat().st_size == len(','.join(row)) + 1:  # +1 for newline
                 f.seek(0)  # Go to start of file
                 writer.writerow(['timestamp', 'total_minutes', 'armed_minutes', 'disarmed_minutes', 
-                                'battery_swaps', 'startups', 'voltage', 'cpu_temp', 'mah_consumed', 'time_status'])
+                                'battery_swaps', 'startups', 'voltage', 'cpu_temp', 'mah_consumed', 'wh_consumed', 'time_status'])
                 f.seek(0, 2)  # Go back to end of file
     
     def get_vehicle_status(self) -> Tuple[float, bool, float]:
@@ -433,7 +453,8 @@ class OdometerService:
         """Send odometer stats to Mavlink as named float values"""
         stats_to_send = {
             "ODO_UPTM": self.stats['total_minutes'],
-            "ODO_MAH": self.stats['total_mah_consumed']  # Ah consumed
+            "ODO_MAH": self.stats['total_mah_consumed'],  # Keep for backward compatibility
+            "ODO_WH": self.stats['total_wh_consumed']  # Add watt-hours consumed
         }
         
         for name, value in stats_to_send.items():
