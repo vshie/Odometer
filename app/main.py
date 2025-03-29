@@ -89,6 +89,15 @@ class OdometerService:
             logger.info("Detected new vehicle startup")
             with self.stats_lock:
                 self.stats['startups'] += 1
+                
+                # Add current battery's watt-hours to lifetime total before resetting
+                if self.stats['current_battery_wh'] > 0:
+                    self.stats['total_wh_consumed'] += self.stats['current_battery_wh']
+                    logger.info(f"System restart detected! Adding current battery Wh: {self.stats['current_battery_wh']:.2f}Wh to lifetime total: {self.stats['total_wh_consumed']:.2f}Wh")
+                    # Reset current battery watt-hours
+                    self.stats['current_battery_wh'] = 0.0
+                    self.stats['voltage_sum'] = 0.0
+                    self.stats['voltage_count'] = 0
             
             # Create the marker file
             with open(STARTUP_MARKER, 'w') as f:
