@@ -584,7 +584,7 @@
                         grid: {
                             left: '3%',
                             right: '4%',
-                            bottom: '15%',
+                            bottom: '3%',
                             containLabel: true
                         },
                         tooltip: {
@@ -599,8 +599,7 @@
                         },
                         legend: {
                             data: ['Battery Voltage', 'CPU Temperature'],
-                            bottom: -10,
-                            padding: [10, 0, 0, 0]
+                            bottom: 0
                         },
                         toolbox: {
                             feature: {
@@ -1280,7 +1279,7 @@
                             options.legend.textStyle = { color: '#666666' };
                         }
 
-                        // Update the chart
+                            // Update the chart
                         this.historyChart.setOption(options);
 
                     } catch (e) {
