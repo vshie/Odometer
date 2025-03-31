@@ -366,8 +366,10 @@ class OdometerService:
             cpu_temp_value = str(self.stats['cpu_temp']) if self.stats['cpu_temp'] > 0 else ''
             
             # Create row with all fields, converting all values to strings
+            # Use local timezone for timestamp
+            local_time = datetime.datetime.now().astimezone()
             row = [
-                datetime.datetime.now().isoformat(),
+                local_time.isoformat(),
                 str(self.stats['total_minutes']),
                 str(self.stats['armed_minutes']),
                 str(self.stats['disarmed_minutes']),
