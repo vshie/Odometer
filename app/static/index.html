@@ -1282,18 +1282,16 @@
                 },
 
                 getTimeRangeMax() {
-                    // Use the most recent data point's local time
+                    // Use the most recent data point's time
                     if (this.historicalData && this.historicalData.length > 0) {
                         const timestamps = this.historicalData.map(d => {
                             const date = d.timestamp instanceof Date ? d.timestamp : new Date(d.timestamp);
-                            // Convert to local time
-                            return new Date(date.getTime() - (date.getTimezoneOffset() * 60000));
+                            return date;
                         });
                         return new Date(Math.max(...timestamps));
                     }
-                    // Use local current time
-                    const now = new Date();
-                    return new Date(now.getTime() - (now.getTimezoneOffset() * 60000));
+                    // Use current time
+                    return new Date();
                 },
                 
                 getTimeUnit() {

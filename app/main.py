@@ -358,6 +358,19 @@ class OdometerService:
         except Exception as e:
             logger.error(f"Error updating stats: {e}")
     
+    def get_local_time(self) -> datetime.datetime:
+        """Get the local time from the system-information endpoint"""
+        try:
+            response = requests.get('http://hosts.docker.internal/system-information/system/unix_time_seconds', timeout=2)
+            if response.status_code == 200:
+                unix_time = float(response.text)
+                return datetime.datetime.fromtimestamp(unix_time)
+        except Exception as e:
+            logger.warning(f"Failed to get local time from system-information endpoint: {e}")
+        
+        # Fallback to system time if endpoint is not available
+        return datetime.datetime.now()
+
     def write_stats_to_csv(self, time_status="normal", startup_detected=False):
         """Write the current stats to the CSV file"""
         with open(ODOMETER_CSV, 'a', newline='') as f:
@@ -365,9 +378,10 @@ class OdometerService:
             # Only write valid CPU temperature values to CSV
             cpu_temp_value = str(self.stats['cpu_temp']) if self.stats['cpu_temp'] > 0 else ''
             
+            # Get local time from system-information endpoint
+            local_time = self.get_local_time()
+            
             # Create row with all fields, converting all values to strings
-            # Use local timezone for timestamp
-            local_time = datetime.datetime.now().astimezone()
             row = [
                 local_time.isoformat(),
                 str(self.stats['total_minutes']),
@@ -584,7 +598,9 @@ def add_maintenance():
     if not event_type or not details:
         return jsonify({"status": "error", "message": "Event type and details are required"}), 400
     
-    timestamp = datetime.datetime.now().isoformat()
+    # Get local time from system-information endpoint
+    odometer_service = app.config['odometer_service']
+    timestamp = odometer_service.get_local_time().isoformat()
     
     with open(MAINTENANCE_CSV, 'a', newline='') as f:
         writer = csv.writer(f)
