@@ -263,14 +263,14 @@ class OdometerService:
                         else:
                             self.stats['cpu_temp'] = 0.0
                         
-                        # Load mAh consumed if it exists (index 8)
+                        # Load total watt-hours consumed if it exists (index 8)
                         if len(last_row) > 8 and last_row[8].strip():
                             try:
-                                self.stats['total_mah_consumed'] = float(last_row[8])
+                                self.stats['total_wh_consumed'] = float(last_row[8])
                             except (ValueError, TypeError):
-                                self.stats['total_mah_consumed'] = 0.0
+                                self.stats['total_wh_consumed'] = 0.0
                         else:
-                            self.stats['total_mah_consumed'] = 0.0
+                            self.stats['total_wh_consumed'] = 0.0
     
     def update_loop(self):
         """Main update loop that runs every minute"""
@@ -326,6 +326,10 @@ class OdometerService:
                     # Calculate average voltage for this battery
                     avg_voltage = self.stats['voltage_sum'] / self.stats['voltage_count']
                     
+                    # Calculate watt-hours for this update
+                    # current_consumed is in mAh, convert to Ah and multiply by voltage to get Wh
+                    wh_consumed = (abs(current_consumed) / 1000.0) * avg_voltage
+                    
                     # Check for battery swap (current_consumed reset and voltage increase)
                     if (current_consumed < self.stats['last_current_consumed'] and 
                         current_voltage > (self.stats['last_voltage'] + 1.0) and 
@@ -333,10 +337,7 @@ class OdometerService:
                         
                         # Battery swap detected
                         self.stats['battery_swaps'] += 1
-                        
-                        # Add current battery's watt-hours to total lifetime watt-hours
-                        self.stats['total_wh_consumed'] += self.stats['current_battery_wh']
-                        logger.info(f"Battery swap detected! Current battery Wh: {self.stats['current_battery_wh']:.2f}Wh, Total lifetime Wh: {self.stats['total_wh_consumed']:.2f}Wh")
+                        logger.info(f"Battery swap detected! Resetting current battery tracking.")
                         
                         # Reset current battery watt-hours and voltage tracking
                         self.stats['current_battery_wh'] = 0.0
@@ -344,12 +345,12 @@ class OdometerService:
                         self.stats['voltage_count'] = 1
                         avg_voltage = current_voltage
                     
-                    # Calculate watt-hours for this update
-                    # current_consumed is in mAh, convert to Ah and multiply by voltage to get Wh
-                    wh_consumed = (abs(current_consumed) / 1000.0) * avg_voltage
-                    
                     # Update current battery watt-hours
                     self.stats['current_battery_wh'] = wh_consumed
+                    
+                    # Update total lifetime watt-hours
+                    self.stats['total_wh_consumed'] = wh_consumed
+                    logger.info(f"Updated watt-hours: Current={wh_consumed:.2f}Wh, Total={self.stats['total_wh_consumed']:.2f}Wh")
                     
                     # Update last values
                     self.stats['last_current_consumed'] = current_consumed
@@ -491,7 +492,6 @@ class OdometerService:
         """Send odometer stats to Mavlink as named float values"""
         stats_to_send = {
             "ODO_UPTM": self.stats['total_minutes'],
-            "ODO_MAH": self.stats['total_mah_consumed'],  # Keep for backward compatibility
             "ODO_WH": self.stats['total_wh_consumed']  # Add watt-hours consumed
         }
         
