@@ -67,7 +67,16 @@ class OdometerService:
             'voltage_sum': 0.0,  # Sum of voltages for averaging
             'voltage_count': 0,  # Number of voltage readings
             'last_current_consumed': 0.0,  # Last current consumed for battery swap detection
+            'current_mission': {
+                'start_time': None,
+                'start_voltage': 0.0,
+                'start_cpu_temp': 0.0,
+                'end_voltage': 0.0,
+                'end_cpu_temp': 0.0,
+                'total_ah': 0.0
+            }
         }
+        self.missions = []  # List to store completed missions
         self.last_update_time = time.time()
         self.minutes_since_update = 0
         self.setup_csv_files()
@@ -330,14 +339,38 @@ class OdometerService:
                     # current_consumed is in mAh, convert to Ah and multiply by voltage to get Wh
                     wh_consumed = (abs(current_consumed) / 1000.0) * avg_voltage
                     
-                    # Check for battery swap (current_consumed reset and voltage increase)
+                    # Check for battery swap or startup (current_consumed reset and voltage increase)
                     if (current_consumed < self.stats['last_current_consumed'] and 
                         current_voltage > (self.stats['last_voltage'] + 1.0) and 
                         self.stats['last_voltage'] > 0):
                         
+                        # Save the completed mission if we have one
+                        if self.stats['current_mission']['start_time'] is not None:
+                            mission = {
+                                'start_time': self.stats['current_mission']['start_time'],
+                                'end_time': self.get_local_time(),
+                                'start_voltage': self.stats['current_mission']['start_voltage'],
+                                'end_voltage': self.stats['last_voltage'],
+                                'start_cpu_temp': self.stats['current_mission']['start_cpu_temp'],
+                                'end_cpu_temp': self.stats['cpu_temp'],
+                                'total_ah': self.stats['current_mission']['total_ah']
+                            }
+                            self.missions.append(mission)
+                            logger.info(f"Mission completed: {mission}")
+                        
+                        # Start new mission
+                        self.stats['current_mission'] = {
+                            'start_time': self.get_local_time(),
+                            'start_voltage': current_voltage,
+                            'start_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
+                            'end_voltage': current_voltage,
+                            'end_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
+                            'total_ah': 0.0
+                        }
+                        
                         # Battery swap detected
                         self.stats['battery_swaps'] += 1
-                        logger.info(f"Battery swap detected! Resetting current battery tracking.")
+                        logger.info(f"Battery swap detected! Starting new mission.")
                         
                         # Reset current battery watt-hours and voltage tracking
                         self.stats['current_battery_wh'] = 0.0
@@ -350,6 +383,24 @@ class OdometerService:
                     
                     # Update total lifetime watt-hours
                     self.stats['total_wh_consumed'] = wh_consumed
+                    
+                    # Update current mission stats
+                    if self.stats['current_mission']['start_time'] is None:
+                        self.stats['current_mission'] = {
+                            'start_time': self.get_local_time(),
+                            'start_voltage': current_voltage,
+                            'start_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
+                            'end_voltage': current_voltage,
+                            'end_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
+                            'total_ah': 0.0
+                        }
+                    
+                    # Update mission end values
+                    self.stats['current_mission']['end_voltage'] = current_voltage
+                    if current_cpu_temp > 0:
+                        self.stats['current_mission']['end_cpu_temp'] = current_cpu_temp
+                    self.stats['current_mission']['total_ah'] = abs(current_consumed) / 1000.0  # Convert mAh to Ah
+                    
                     logger.info(f"Updated watt-hours: Current={wh_consumed:.2f}Wh, Total={self.stats['total_wh_consumed']:.2f}Wh")
                     
                     # Update last values
@@ -404,8 +455,9 @@ class OdometerService:
                 str(self.stats['battery_swaps']),
                 str(self.stats['startups']),
                 str(self.stats['last_voltage']),
-                cpu_temp_value,  # Only write non-zero values
-                str(self.stats['total_wh_consumed']),  # Lifetime watt-hours consumed
+                cpu_temp_value,
+                str(self.stats['total_wh_consumed']),
+                str(self.stats['current_mission']['total_ah']),  # Add current mission's amp-hours
                 time_status + (" (startup)" if startup_detected else "")
             ]
             
@@ -416,7 +468,8 @@ class OdometerService:
             if ODOMETER_CSV.stat().st_size == len(','.join(row)) + 1:  # +1 for newline
                 f.seek(0)  # Go to start of file
                 writer.writerow(['timestamp', 'total_minutes', 'armed_minutes', 'disarmed_minutes', 
-                                'battery_swaps', 'startups', 'voltage', 'cpu_temp', 'wh_consumed', 'time_status'])
+                               'battery_swaps', 'startups', 'voltage', 'cpu_temp', 'wh_consumed', 
+                               'current_ah', 'time_status'])
                 f.seek(0, 2)  # Go back to end of file
     
     def get_vehicle_status(self) -> Tuple[float, bool, float]:
@@ -784,6 +837,18 @@ def clear_history():
     except Exception as e:
         logger.error(f"Error clearing history: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/missions')
+def get_missions():
+    """Get the list of completed missions"""
+    with odometer_service.stats_lock:
+        return jsonify({
+            "status": "success",
+            "data": {
+                "current_mission": odometer_service.stats['current_mission'],
+                "completed_missions": odometer_service.missions
+            }
+        })
 
 # If run directly, start the app
 if __name__ == "__main__":

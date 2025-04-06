@@ -165,7 +165,7 @@
                             <v-card elevation="4">
                                 <v-card-title class="teal darken-1 white--text">
                                     <v-icon large color="white" class="mr-2">mdi-chart-line</v-icon>
-                                    Temperature & Voltage History
+                                    Current Session Data
                                 </v-card-title>
                                 <v-card-text class="text-center pa-5">
                                     <div style="position: relative; height: 400px; width: 100%;">
@@ -179,41 +179,57 @@
                                             style="position: absolute; top: 10px; right: 10px;"
                                         ></v-progress-circular>
                                     </div>
-                                    <div class="caption mt-4 text-center">CPU Temperature and Battery Voltage over time</div>
+                                    <div class="caption mt-4 text-center">CPU Temperature and Battery Voltage for current session</div>
                                 </v-card-text>
-                                <v-card-actions class="justify-center pb-4">
-                                    <v-btn-toggle v-model="timeRange" mandatory>
-                                        <v-btn value="15m">15 Min</v-btn>
-                                        <v-btn value="1h">1 Hour</v-btn>
-                                        <v-btn value="24h">24 Hours</v-btn>
-                                        <v-btn value="7d">7 Days</v-btn>
-                                        <v-btn value="30d">30 Days</v-btn>
-                                        <v-btn value="all">All Time</v-btn>
-                                    </v-btn-toggle>
-                                    <v-btn class="ml-2" @click="resetZoom" small>
-                                        <v-icon left>mdi-refresh</v-icon>
-                                        Reset Zoom
-                                    </v-btn>
-                                    <v-tooltip bottom>
-                                        <template v-slot:activator="{ on, attrs }">
-                                            <v-icon
-                                                class="ml-2"
-                                                v-bind="attrs"
-                                                v-on="on"
-                                                color="primary"
-                                            >
-                                                mdi-help-circle
-                                            </v-icon>
+                            </v-card>
+                        </v-col>
+                    </v-row>
+
+                    <!-- Missions Table -->
+                    <v-row class="mt-6">
+                        <v-col cols="12">
+                            <v-card elevation="4">
+                                <v-card-title class="teal darken-1 white--text">
+                                    <v-icon large color="white" class="mr-2">mdi-history</v-icon>
+                                    Mission History
+                                </v-card-title>
+                                <v-card-text>
+                                    <v-data-table
+                                        :headers="missionHeaders"
+                                        :items="missions"
+                                        :items-per-page="5"
+                                        class="elevation-1"
+                                        :footer-props="{
+                                            'items-per-page-options': [5, 10, 15, -1],
+                                            'items-per-page-text': 'Missions per page'
+                                        }"
+                                    >
+                                        <template v-slot:item.start_time="{ item }">
+                                            {{ formatDate(item.start_time) }}
                                         </template>
-                                        <div class="text-body-2">
-                                            <div class="mb-1"><strong>Graph Controls:</strong></div>
-                                            <div>• Mouse wheel: Zoom in/out</div>
-                                            <div>• Click and drag: Pan</div>
-                                            <div>• Double click: Reset zoom</div>
-                                            <div>• Reset Zoom button: Return to original view</div>
-                                        </div>
-                                    </v-tooltip>
-                                </v-card-actions>
+                                        <template v-slot:item.end_time="{ item }">
+                                            {{ formatDate(item.end_time) }}
+                                        </template>
+                                        <template v-slot:item.duration="{ item }">
+                                            {{ calculateDuration(item.start_time, item.end_time) }}
+                                        </template>
+                                        <template v-slot:item.start_voltage="{ item }">
+                                            {{ item.start_voltage.toFixed(2) }}V
+                                        </template>
+                                        <template v-slot:item.end_voltage="{ item }">
+                                            {{ item.end_voltage.toFixed(2) }}V
+                                        </template>
+                                        <template v-slot:item.start_cpu_temp="{ item }">
+                                            {{ item.start_cpu_temp.toFixed(1) }}°C
+                                        </template>
+                                        <template v-slot:item.end_cpu_temp="{ item }">
+                                            {{ item.end_cpu_temp.toFixed(1) }}°C
+                                        </template>
+                                        <template v-slot:item.total_ah="{ item }">
+                                            {{ item.total_ah.toFixed(2) }}Ah
+                                        </template>
+                                    </v-data-table>
+                                </v-card-text>
                             </v-card>
                         </v-col>
                     </v-row>
@@ -673,13 +689,26 @@
                                 }
                             }
                         }
-                    }
+                    },
+                    missionHeaders: [
+                        { text: 'Start Time', value: 'start_time' },
+                        { text: 'End Time', value: 'end_time' },
+                        { text: 'Duration', value: 'duration' },
+                        { text: 'Start Voltage', value: 'start_voltage' },
+                        { text: 'End Voltage', value: 'end_voltage' },
+                        { text: 'Start CPU Temp', value: 'start_cpu_temp' },
+                        { text: 'End CPU Temp', value: 'end_cpu_temp' },
+                        { text: 'Total Ah', value: 'total_ah' }
+                    ],
+                    missions: [],
+                    currentMission: null,
                 }
             },
             mounted() {
                 this.fetchStats();
                 this.fetchMaintenanceLog();
                 this.fetchHistoricalData();
+                this.fetchMissions();
                 
                 // Set up initial theme detection
                 this.setupThemeDetection();
@@ -688,6 +717,7 @@
                 this.updateInterval = setInterval(() => {
                     if (!document.hidden) {
                         this.fetchStats();
+                        this.fetchMissions();
                         // Fetch historical data every 2 cycles (1 minute) instead of every 4 cycles (2 minutes)
                         if (this.updateCount % 2 === 0) {
                             this.fetchHistoricalData();
@@ -1230,15 +1260,12 @@
                     }
 
                     try {
-                        // Get time range limits
-                        const timeRangeMin = this.getTimeRangeMin();
-                        const timeRangeMax = this.getTimeRangeMax();
-
-                        // Filter and format data for Chart.js
+                        // Filter data for current mission
                         const filteredData = this.historicalData
                             .filter(d => {
-                                if (this.timeRange === 'all') return true;
-                                return d.timestamp >= timeRangeMin && d.timestamp <= timeRangeMax;
+                                if (!this.currentMission) return false;
+                                const timestamp = new Date(d.timestamp);
+                                return timestamp >= new Date(this.currentMission.start_time);
                             })
                             .sort((a, b) => a.timestamp - b.timestamp);
 
@@ -1256,9 +1283,6 @@
                                 y: d.cpuTemp
                             }));
 
-                        // Update time unit based on range
-                        this.chartOptions.scales.x.time.unit = this.getTimeUnit();
-
                         // Update the chart
                         this.historyChart.update();
 
@@ -1267,86 +1291,28 @@
                     }
                 },
                 
-                getTimeRangeMin() {
-                    const maxTime = this.getTimeRangeMax();
-                    const offset = maxTime.getTimezoneOffset() * 60000; // Convert minutes to milliseconds
-                    
-                    switch(this.timeRange) {
-                        case '15m': return new Date(maxTime.getTime() - (15 * 60 * 1000));
-                        case '1h': return new Date(maxTime.getTime() - (60 * 60 * 1000));
-                        case '24h': return new Date(maxTime.getTime() - (24 * 60 * 60 * 1000));
-                        case '7d': return new Date(maxTime.getTime() - (7 * 24 * 60 * 60 * 1000));
-                        case '30d': return new Date(maxTime.getTime() - (30 * 24 * 60 * 60 * 1000));
-                        default: return null; // For 'all' time range
-                    }
+                calculateDuration(startTime, endTime) {
+                    const start = new Date(startTime);
+                    const end = new Date(endTime);
+                    const diff = end - start;
+                    const hours = Math.floor(diff / (1000 * 60 * 60));
+                    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+                    return `${hours}h ${minutes}m`;
                 },
-
-                getTimeRangeMax() {
-                    // Use the most recent data point's time
-                    if (this.historicalData && this.historicalData.length > 0) {
-                        const timestamps = this.historicalData.map(d => {
-                            const date = d.timestamp instanceof Date ? d.timestamp : new Date(d.timestamp);
-                            return date;
+                fetchMissions() {
+                    axios.get('/missions')
+                        .then(response => {
+                            if (response.data.status === 'success') {
+                                this.currentMission = response.data.data.current_mission;
+                                this.missions = response.data.data.completed_missions;
+                                // Update chart with current mission data
+                                this.updateHistoryChart();
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Error fetching missions:', error);
+                            this.showSnackbar('Failed to fetch mission history', 'error');
                         });
-                        return new Date(Math.max(...timestamps));
-                    }
-                    // Use current time
-                    return new Date();
-                },
-                
-                getTimeUnit() {
-                    switch(this.timeRange) {
-                        case '15m': return 'minute';
-                        case '1h': return 'minute';
-                        case '24h': return 'hour';
-                        case '7d': return 'day';
-                        case '30d': return 'month';
-                        default: return 'minute';
-                    }
-                },
-                
-                openEditDialog(item) {
-                    // Parse the timestamp into date and time parts
-                    const date = new Date(item.timestamp);
-                    const dateString = date.toISOString().split('T')[0]; // YYYY-MM-DD
-                    const timeString = date.toTimeString().split(' ')[0].substring(0, 5); // HH:MM
-                    
-                    this.editDialog.item = item;
-                    this.editDialog.date = dateString;
-                    this.editDialog.time = timeString;
-                    this.editDialog.show = true;
-                },
-                
-                saveEditedRecord() {
-                    if (!this.editDialog.item) return;
-                    
-                    // Combine date and time into ISO string
-                    const newTimestamp = `${this.editDialog.date}T${this.editDialog.time}:00`;
-                    const originalTimestamp = this.editDialog.item.timestamp;
-                    
-                    // Update the record in the backend
-                    axios.post('/maintenance/update', {
-                        original_timestamp: originalTimestamp,
-                        new_timestamp: newTimestamp
-                    })
-                    .then(response => {
-                        if (response.data.status === 'success') {
-                            // Update the local record
-                            this.editDialog.item.timestamp = newTimestamp;
-                            this.showSnackbar('Record updated successfully');
-                            // Refresh the maintenance log
-                            this.fetchMaintenanceLog();
-                        } else {
-                            this.showSnackbar(response.data.message || 'Failed to update record', 'error');
-                        }
-                    })
-                    .catch(error => {
-                        console.error('Error updating maintenance record:', error);
-                        this.showSnackbar('Failed to update record', 'error');
-                    })
-                    .finally(() => {
-                        this.editDialog.show = false;
-                    });
                 },
                 showClearDialog() {
                     this.clearDialog.show = true;
@@ -1420,11 +1386,6 @@
                         this.resetDeleteDialog();
                     });
                 },
-                resetZoom() {
-                    if (this.historyChart) {
-                        this.historyChart.resetZoom();
-                    }
-                }
             }
         });
         </script>
