@@ -1260,12 +1260,15 @@
                     }
 
                     try {
-                        // Filter data for current mission
+                        // Get the current mission's start time
+                        const missionStartTime = this.currentMission ? new Date(this.currentMission.start_time) : null;
+                        
+                        // Filter data for current mission only
                         const filteredData = this.historicalData
                             .filter(d => {
-                                if (!this.currentMission) return false;
+                                if (!missionStartTime) return false;
                                 const timestamp = new Date(d.timestamp);
-                                return timestamp >= new Date(this.currentMission.start_time);
+                                return timestamp >= missionStartTime;
                             })
                             .sort((a, b) => a.timestamp - b.timestamp);
 
