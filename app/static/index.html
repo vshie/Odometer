@@ -185,48 +185,53 @@
                         </v-col>
                     </v-row>
 
-                    <!-- Missions Table -->
+                    <!-- Usage Table -->
                     <v-row class="mt-6">
                         <v-col cols="12">
                             <v-card elevation="4">
                                 <v-card-title class="teal darken-1 white--text">
                                     <v-icon large color="white" class="mr-2">mdi-history</v-icon>
-                                    Mission History
+                                    Usage History
                                 </v-card-title>
                                 <v-card-text>
                                     <v-data-table
-                                        :headers="missionHeaders"
-                                        :items="missions"
+                                        :headers="usageHeaders"
+                                        :items="allUsage"
                                         :items-per-page="5"
                                         class="elevation-1"
                                         :footer-props="{
                                             'items-per-page-options': [5, 10, 15, -1],
-                                            'items-per-page-text': 'Missions per page'
+                                            'items-per-page-text': 'Usage sessions per page'
                                         }"
                                     >
                                         <template v-slot:item.start_time="{ item }">
                                             {{ formatDate(item.start_time) }}
                                         </template>
                                         <template v-slot:item.end_time="{ item }">
-                                            {{ formatDate(item.end_time) }}
+                                            {{ item.isCurrent ? 'Ongoing' : formatDate(item.end_time) }}
                                         </template>
                                         <template v-slot:item.duration="{ item }">
-                                            {{ calculateDuration(item.start_time, item.end_time) }}
+                                            {{ item.isCurrent ? 'Ongoing' : calculateDuration(item.start_time, item.end_time) }}
                                         </template>
                                         <template v-slot:item.start_voltage="{ item }">
                                             {{ item.start_voltage.toFixed(2) }}V
                                         </template>
                                         <template v-slot:item.end_voltage="{ item }">
-                                            {{ item.end_voltage.toFixed(2) }}V
+                                            {{ item.isCurrent ? stats.last_voltage.toFixed(2) : item.end_voltage.toFixed(2) }}V
                                         </template>
                                         <template v-slot:item.start_cpu_temp="{ item }">
                                             {{ item.start_cpu_temp.toFixed(1) }}°C
                                         </template>
                                         <template v-slot:item.end_cpu_temp="{ item }">
-                                            {{ item.end_cpu_temp.toFixed(1) }}°C
+                                            {{ item.isCurrent ? stats.cpu_temp.toFixed(1) : item.end_cpu_temp.toFixed(1) }}°C
                                         </template>
                                         <template v-slot:item.total_ah="{ item }">
-                                            {{ item.total_ah.toFixed(2) }}Ah
+                                            {{ item.isCurrent ? (stats.current_battery_wh / stats.last_voltage).toFixed(2) : item.total_ah.toFixed(2) }}Ah
+                                        </template>
+                                        <template v-slot:item.status="{ item }">
+                                            <v-chip :color="item.isCurrent ? 'success' : 'grey'" dark small>
+                                                {{ item.isCurrent ? 'Current' : 'Completed' }}
+                                            </v-chip>
                                         </template>
                                     </v-data-table>
                                 </v-card-text>
@@ -690,7 +695,7 @@
                             }
                         }
                     },
-                    missionHeaders: [
+                    usageHeaders: [
                         { text: 'Start Time', value: 'start_time' },
                         { text: 'End Time', value: 'end_time' },
                         { text: 'Duration', value: 'duration' },
@@ -698,17 +703,19 @@
                         { text: 'End Voltage', value: 'end_voltage' },
                         { text: 'Start CPU Temp', value: 'start_cpu_temp' },
                         { text: 'End CPU Temp', value: 'end_cpu_temp' },
-                        { text: 'Total Ah', value: 'total_ah' }
+                        { text: 'Total Ah', value: 'total_ah' },
+                        { text: 'Status', value: 'status' }
                     ],
-                    missions: [],
-                    currentMission: null,
+                    usage: [],
+                    currentUsage: null,
+                    allUsage: [],
                 }
             },
             mounted() {
                 this.fetchStats();
                 this.fetchMaintenanceLog();
                 this.fetchHistoricalData();
-                this.fetchMissions();
+                this.fetchUsage();
                 
                 // Set up initial theme detection
                 this.setupThemeDetection();
@@ -717,7 +724,7 @@
                 this.updateInterval = setInterval(() => {
                     if (!document.hidden) {
                         this.fetchStats();
-                        this.fetchMissions();
+                        this.fetchUsage();
                         // Fetch historical data every 2 cycles (1 minute) instead of every 4 cycles (2 minutes)
                         if (this.updateCount % 2 === 0) {
                             this.fetchHistoricalData();
@@ -1260,15 +1267,15 @@
                     }
 
                     try {
-                        // Get the current mission's start time
-                        const missionStartTime = this.currentMission ? new Date(this.currentMission.start_time) : null;
+                        // Get the current usage session's start time
+                        const usageStartTime = this.currentUsage ? new Date(this.currentUsage.start_time) : null;
                         
-                        // Filter data for current mission only
+                        // Filter data for current usage session only
                         const filteredData = this.historicalData
                             .filter(d => {
-                                if (!missionStartTime) return false;
+                                if (!usageStartTime) return false;
                                 const timestamp = new Date(d.timestamp);
-                                return timestamp >= missionStartTime;
+                                return timestamp >= usageStartTime;
                             })
                             .sort((a, b) => a.timestamp - b.timestamp);
 
@@ -1302,19 +1309,33 @@
                     const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
                     return `${hours}h ${minutes}m`;
                 },
-                fetchMissions() {
+                fetchUsage() {
                     axios.get('/missions')
                         .then(response => {
                             if (response.data.status === 'success') {
-                                this.currentMission = response.data.data.current_mission;
-                                this.missions = response.data.data.completed_missions;
-                                // Update chart with current mission data
+                                this.currentUsage = response.data.data.current_mission;
+                                this.usage = response.data.data.completed_missions;
+                                
+                                // Combine current and completed usage sessions
+                                this.allUsage = [
+                                    ...(this.currentUsage ? [{
+                                        ...this.currentUsage,
+                                        isCurrent: true,
+                                        end_time: new Date().toISOString() // Current time for ongoing session
+                                    }] : []),
+                                    ...this.usage.map(m => ({
+                                        ...m,
+                                        isCurrent: false
+                                    }))
+                                ];
+                                
+                                // Update chart with current usage data
                                 this.updateHistoryChart();
                             }
                         })
                         .catch(error => {
-                            console.error('Error fetching missions:', error);
-                            this.showSnackbar('Failed to fetch mission history', 'error');
+                            console.error('Error fetching usage history:', error);
+                            this.showSnackbar('Failed to fetch usage history', 'error');
                         });
                 },
                 showClearDialog() {
