@@ -42,7 +42,7 @@
                     <!-- Move Pie Chart and Logo to top -->
                     <v-row>
                         <v-col cols="12" md="4" class="d-flex align-center justify-center">
-                            <img src="/static/extension_logo.png" alt="Odometer Logo" style="width: 100%;">
+                            <img src="/static/extension_logo.png" alt="Odometer Logo" style="width: 100%; max-width: 200px;">
                         </v-col>
                         <v-col cols="12" md="8">
                             <v-card elevation="4">
@@ -51,7 +51,7 @@
                                     Vehicle Usage Distribution
                                 </v-card-title>
                                 <v-card-text class="text-center pa-5">
-                                    <div style="position: relative; height: 140px; width: 100%; margin: 0 auto; max-width: 350px; z-index: 1; padding: 0;">
+                                    <div style="position: relative; height: 200px; width: 100%; margin: 0 auto; max-width: 350px; z-index: 1; padding: 0;">
                                         <canvas id="usageChart"></canvas>
                                     </div>
                                     <div class="caption mt-4 text-center">Proportion of time spent Armed vs Disarmed</div>
