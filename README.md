@@ -12,7 +12,7 @@ The BlueOS Odometer Extension tracks your vehicle's usage stats and maintenance 
 
 ## Installation
 
-Once launched in the Extensions Manager, install this extension directly from the Extensions page in your BlueOS web interface. Prior to that, instal with vshie/blueos-blueos-odometer as docker image and main as the branch. Use the contents of the docker-file permissions section with \ removed for  the settings. 
+Once launched in the Extensions Manager, install this extension directly from the Extensions page in your BlueOS web interface. Prior to that, install with vshie/blueos-odometer as docker image and main as the branch. Use the contents of the docker-file permissions section with \ removed for the settings. 
 
 ## How It Works
 

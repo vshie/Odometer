@@ -62,8 +62,9 @@ class OdometerService:
             'startups': 0,
             'last_voltage': 0.0,
             'cpu_temp': 0.0,
-            'total_wh_consumed': 0.0,  # Total lifetime watt-hours
-            'current_battery_wh': 0.0,  # Current battery watt-hours
+            'previous_batteries_wh': 0.0,  # Accumulated watt-hours from all previous (swapped) batteries
+            'current_battery_wh': 0.0,  # Current battery watt-hours (from MAVLink current_consumed)
+            'total_wh_consumed': 0.0,  # Lifetime total = previous_batteries_wh + current_battery_wh
             'voltage_sum': 0.0,  # Sum of voltages for averaging
             'voltage_count': 0,  # Number of voltage readings
             'last_current_consumed': 0.0,  # Last current consumed for battery swap detection
@@ -73,7 +74,9 @@ class OdometerService:
                 'start_cpu_temp': 0.0,
                 'end_voltage': 0.0,
                 'end_cpu_temp': 0.0,
-                'total_ah': 0.0
+                'total_ah': 0.0,
+                'start_uptime': 0,
+                'end_uptime': 0
             }
         }
         self.missions = []  # List to store completed missions
@@ -92,6 +95,11 @@ class OdometerService:
         """
         Detect if this is a new startup and increment the counter if it is.
         Uses a marker file to detect if this is a new startup.
+        
+        Note: Energy tracking is handled automatically:
+        - previous_batteries_wh is loaded from CSV
+        - current_battery_wh is calculated from MAVLink current_consumed (which persists)
+        - total_wh_consumed = previous_batteries_wh + current_battery_wh
         """
         is_new_startup = not STARTUP_MARKER.exists()
         
@@ -99,15 +107,9 @@ class OdometerService:
             logger.info("Detected new vehicle startup")
             with self.stats_lock:
                 self.stats['startups'] += 1
-                
-                # Add current battery's watt-hours to lifetime total before resetting
-                if self.stats['current_battery_wh'] > 0:
-                    self.stats['total_wh_consumed'] += self.stats['current_battery_wh']
-                    logger.info(f"System restart detected! Adding current battery Wh: {self.stats['current_battery_wh']:.2f}Wh to lifetime total: {self.stats['total_wh_consumed']:.2f}Wh")
-                    # Reset current battery watt-hours
-                    self.stats['current_battery_wh'] = 0.0
-                    self.stats['voltage_sum'] = 0.0
-                    self.stats['voltage_count'] = 0
+                # Reset voltage averaging for fresh start
+                self.stats['voltage_sum'] = 0.0
+                self.stats['voltage_count'] = 0
             
             # Create the marker file
             with open(STARTUP_MARKER, 'w') as f:
@@ -163,7 +165,8 @@ class OdometerService:
             with open(ODOMETER_CSV, 'w', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow(['timestamp', 'total_minutes', 'armed_minutes', 'disarmed_minutes', 
-                               'battery_swaps', 'startups', 'voltage', 'cpu_temp', 'wh_consumed', 'time_status'])
+                               'battery_swaps', 'startups', 'voltage', 'cpu_temp', 'wh_consumed', 
+                               'current_ah', 'time_status'])
         else:
             # Check if this is an old format file and upgrade it if needed
             self.upgrade_csv_format()
@@ -192,8 +195,8 @@ class OdometerService:
                     if not row or all(cell.strip() == '' for cell in row):
                         continue
                     
-                    # Skip rows that don't have enough columns
-                    if len(row) < len(headers):
+                    # Skip rows that don't have minimum required columns (at least 9)
+                    if len(row) < 9:
                         continue
                     
                     # Skip rows with invalid timestamp
@@ -211,7 +214,8 @@ class OdometerService:
                         if row[5].strip(): int(row[5])  # startups
                         if row[6].strip(): float(row[6])  # voltage
                         if row[7].strip(): float(row[7])  # cpu_temp
-                        if row[8].strip(): float(row[8])  # mah_consumed
+                        if row[8].strip(): float(row[8])  # wh_consumed
+                        if len(row) > 9 and row[9].strip(): float(row[9])  # current_ah
                     except (ValueError, TypeError):
                         continue
                     
@@ -272,13 +276,19 @@ class OdometerService:
                         else:
                             self.stats['cpu_temp'] = 0.0
                         
-                        # Load total watt-hours consumed if it exists (index 8)
+                        # Load accumulated watt-hours from previous batteries (index 8)
+                        # Note: CSV stores previous_batteries_wh, and total_wh_consumed is calculated
+                        # as previous_batteries_wh + current_battery_wh on each update
                         if len(last_row) > 8 and last_row[8].strip():
                             try:
-                                self.stats['total_wh_consumed'] = float(last_row[8])
+                                self.stats['previous_batteries_wh'] = float(last_row[8])
+                                # Initialize total to previous batteries until we get MAVLink data
+                                self.stats['total_wh_consumed'] = self.stats['previous_batteries_wh']
                             except (ValueError, TypeError):
+                                self.stats['previous_batteries_wh'] = 0.0
                                 self.stats['total_wh_consumed'] = 0.0
                         else:
+                            self.stats['previous_batteries_wh'] = 0.0
                             self.stats['total_wh_consumed'] = 0.0
     
     def update_loop(self):
@@ -339,10 +349,19 @@ class OdometerService:
                     # current_consumed is in mAh, convert to Ah and multiply by voltage to get Wh
                     wh_consumed = (abs(current_consumed) / 1000.0) * avg_voltage
                     
-                    # Check for battery swap or startup (current_consumed reset and voltage increase)
+                    # Check for battery swap (current_consumed reset and voltage increase)
+                    # Battery swap is detected when:
+                    # 1. The consumed current drops (battery was replaced with a fresh one)
+                    # 2. Voltage increases by more than 1V (fresh battery has higher voltage)
+                    # 3. We have a valid previous voltage reading
                     if (current_consumed < self.stats['last_current_consumed'] and 
                         current_voltage > (self.stats['last_voltage'] + 1.0) and 
                         self.stats['last_voltage'] > 0):
+                        
+                        # Add current battery's watt-hours to accumulated total before resetting
+                        if self.stats['current_battery_wh'] > 0:
+                            self.stats['previous_batteries_wh'] += self.stats['current_battery_wh']
+                            logger.info(f"Battery swap: Adding {self.stats['current_battery_wh']:.2f}Wh to previous batteries total: {self.stats['previous_batteries_wh']:.2f}Wh")
                         
                         # Save the completed mission if we have one
                         if self.stats['current_mission']['start_time'] is not None:
@@ -353,7 +372,9 @@ class OdometerService:
                                 'end_voltage': self.stats['last_voltage'],
                                 'start_cpu_temp': self.stats['current_mission']['start_cpu_temp'],
                                 'end_cpu_temp': self.stats['cpu_temp'],
-                                'total_ah': self.stats['current_mission']['total_ah']
+                                'total_ah': self.stats['current_mission']['total_ah'],
+                                'start_uptime': self.stats['current_mission'].get('start_uptime', self.stats['total_minutes']),
+                                'end_uptime': self.stats['total_minutes']
                             }
                             self.missions.append(mission)
                             logger.info(f"Mission completed: {mission}")
@@ -365,24 +386,28 @@ class OdometerService:
                             'start_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
                             'end_voltage': current_voltage,
                             'end_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
-                            'total_ah': 0.0
+                            'total_ah': 0.0,
+                            'start_uptime': self.stats['total_minutes'],
+                            'end_uptime': self.stats['total_minutes']
                         }
                         
                         # Battery swap detected
                         self.stats['battery_swaps'] += 1
                         logger.info(f"Battery swap detected! Starting new mission.")
                         
-                        # Reset current battery watt-hours and voltage tracking
-                        self.stats['current_battery_wh'] = 0.0
+                        # Reset voltage tracking for the new battery
                         self.stats['voltage_sum'] = current_voltage
                         self.stats['voltage_count'] = 1
                         avg_voltage = current_voltage
+                        
+                        # Recalculate wh_consumed for the new battery (should be near zero)
+                        wh_consumed = (abs(current_consumed) / 1000.0) * avg_voltage
                     
-                    # Update current battery watt-hours
+                    # Update current battery watt-hours (energy consumed from current battery)
                     self.stats['current_battery_wh'] = wh_consumed
                     
-                    # Update total lifetime watt-hours
-                    self.stats['total_wh_consumed'] = wh_consumed
+                    # Update lifetime total (previous batteries + current battery)
+                    self.stats['total_wh_consumed'] = self.stats['previous_batteries_wh'] + self.stats['current_battery_wh']
                     
                     # Update current mission stats
                     if self.stats['current_mission']['start_time'] is None:
@@ -392,7 +417,9 @@ class OdometerService:
                             'start_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
                             'end_voltage': current_voltage,
                             'end_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
-                            'total_ah': 0.0
+                            'total_ah': 0.0,
+                            'start_uptime': self.stats['total_minutes'],
+                            'end_uptime': self.stats['total_minutes']
                         }
                     
                     # Update mission end values
@@ -400,8 +427,10 @@ class OdometerService:
                     if current_cpu_temp > 0:
                         self.stats['current_mission']['end_cpu_temp'] = current_cpu_temp
                     self.stats['current_mission']['total_ah'] = abs(current_consumed) / 1000.0  # Convert mAh to Ah
+                    self.stats['current_mission']['end_uptime'] = self.stats['total_minutes']
                     
-                    logger.info(f"Updated watt-hours: Current={wh_consumed:.2f}Wh, Total={self.stats['total_wh_consumed']:.2f}Wh")
+                    # Log energy consumption
+                    logger.info(f"Energy - Current battery: {self.stats['current_battery_wh']:.2f}Wh, Previous batteries: {self.stats['previous_batteries_wh']:.2f}Wh, Lifetime total: {self.stats['total_wh_consumed']:.2f}Wh")
                     
                     # Update last values
                     self.stats['last_current_consumed'] = current_consumed
@@ -426,7 +455,7 @@ class OdometerService:
     def get_local_time(self) -> datetime.datetime:
         """Get the local time from the system-information endpoint"""
         try:
-            response = requests.get('http://hosts.docker.internal/system-information/system/unix_time_seconds', timeout=2)
+            response = requests.get('http://host.docker.internal/system-information/system/unix_time_seconds', timeout=2)
             if response.status_code == 200:
                 unix_time = float(response.text)
                 return datetime.datetime.fromtimestamp(unix_time)
@@ -437,40 +466,37 @@ class OdometerService:
         return datetime.datetime.now()
 
     def write_stats_to_csv(self, time_status="normal", startup_detected=False):
-        """Write the current stats to the CSV file"""
+        """Write the current stats to the CSV file.
+        
+        Note: This method should be called while holding self.stats_lock or with
+        a copy of the stats values to ensure thread safety.
+        """
+        # Only write valid CPU temperature values to CSV
+        cpu_temp_value = str(self.stats['cpu_temp']) if self.stats['cpu_temp'] > 0 else ''
+        
+        # Get local time from system-information endpoint
+        local_time = self.get_local_time()
+        
+        # Create row with all fields, converting all values to strings
+        # Note: wh_consumed column stores previous_batteries_wh (the base for lifetime total)
+        # total_wh_consumed = previous_batteries_wh + current_battery_wh (calculated live)
+        row = [
+            local_time.isoformat(),
+            str(self.stats['total_minutes']),
+            str(self.stats['armed_minutes']),
+            str(self.stats['disarmed_minutes']),
+            str(self.stats['battery_swaps']),
+            str(self.stats['startups']),
+            str(self.stats['last_voltage']),
+            cpu_temp_value,
+            str(self.stats['previous_batteries_wh']),
+            str(self.stats['current_mission']['total_ah']),  # Add current mission's amp-hours
+            time_status + (" (startup)" if startup_detected else "")
+        ]
+        
         with open(ODOMETER_CSV, 'a', newline='') as f:
             writer = csv.writer(f)
-            # Only write valid CPU temperature values to CSV
-            cpu_temp_value = str(self.stats['cpu_temp']) if self.stats['cpu_temp'] > 0 else ''
-            
-            # Get local time from system-information endpoint
-            local_time = self.get_local_time()
-            
-            # Create row with all fields, converting all values to strings
-            row = [
-                local_time.isoformat(),
-                str(self.stats['total_minutes']),
-                str(self.stats['armed_minutes']),
-                str(self.stats['disarmed_minutes']),
-                str(self.stats['battery_swaps']),
-                str(self.stats['startups']),
-                str(self.stats['last_voltage']),
-                cpu_temp_value,
-                str(self.stats['total_wh_consumed']),
-                str(self.stats['current_mission']['total_ah']),  # Add current mission's amp-hours
-                time_status + (" (startup)" if startup_detected else "")
-            ]
-            
-            # Write the row
             writer.writerow(row)
-            
-            # If this is a new file (just created), write the header row first
-            if ODOMETER_CSV.stat().st_size == len(','.join(row)) + 1:  # +1 for newline
-                f.seek(0)  # Go to start of file
-                writer.writerow(['timestamp', 'total_minutes', 'armed_minutes', 'disarmed_minutes', 
-                               'battery_swaps', 'startups', 'voltage', 'cpu_temp', 'wh_consumed', 
-                               'current_ah', 'time_status'])
-                f.seek(0, 2)  # Go back to end of file
     
     def get_vehicle_status(self) -> Tuple[float, bool, float]:
         """Get the vehicle's current voltage, armed status, and current consumed from Mavlink2Rest"""
@@ -657,14 +683,18 @@ def get_maintenance():
 def add_maintenance():
     """Add a new maintenance record"""
     data = request.json
-    event_type = data.get('event_type')
-    details = data.get('details')
+    event_type = data.get('event_type', '').strip()
+    details = data.get('details', '').strip()
     
     if not event_type or not details:
         return jsonify({"status": "error", "message": "Event type and details are required"}), 400
     
-    # Get local time from system-information endpoint
-    odometer_service = app.config['odometer_service']
+    # Sanitize inputs to prevent CSV injection
+    # Remove leading characters that could be interpreted as formulas
+    if details and details[0] in ('=', '+', '-', '@', '\t', '\r'):
+        details = "'" + details
+    
+    # Get local time from system-information endpoint (use global odometer_service)
     timestamp = odometer_service.get_local_time().isoformat()
     
     with open(MAINTENANCE_CSV, 'a', newline='') as f:

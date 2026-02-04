@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 # Install required dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY app /app
@@ -11,14 +11,18 @@ RUN mkdir -p /app/data /app/logs
 
 # Install Python dependencies with pinned versions for compatibility
 RUN pip install --no-cache-dir \
-    flask==2.0.1 \
-    werkzeug==2.0.1 \
+    flask==3.0.0 \
+    werkzeug==3.0.1 \
     requests==2.31.0 \
     --extra-index-url https://www.piwheels.org/simple
 
 EXPOSE 7042/tcp
 
-LABEL version="1.0.0"
+# Healthcheck to verify the service is running
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:7042/stats || exit 1
+
+LABEL version="1.0.1"
 
 ARG IMAGE_NAME
 
