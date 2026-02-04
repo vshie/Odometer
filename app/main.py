@@ -8,10 +8,13 @@ import datetime
 import logging
 import logging.handlers
 import threading
+import asyncio
 import requests
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from flask import Flask, jsonify, request, send_from_directory, send_file
+import websockets
+from websockets.exceptions import ConnectionClosed
 
 # Set up logging
 log_dir = Path('/app/logs')
@@ -47,6 +50,8 @@ UPDATE_INTERVAL = 60  # Update every 60 seconds (1 minute)
 ARMED_FLAG = 128  # MAV_MODE_FLAG_SAFETY_ARMED (0b10000000)
 MAX_TIME_JUMP_MINUTES = 5  # Maximum acceptable time jump in minutes
 PORT = 80  # Port to run the server on
+WEBSOCKET_PORT = 8765  # Port for Cockpit data lake streaming
+WEBSOCKET_UPDATE_INTERVAL = 1.0  # Seconds between WebSocket updates
 
 app = Flask(__name__, static_folder='static')
 
@@ -59,6 +64,40 @@ REGISTER_SERVICE = {
     "webpage": "https://github.com/vshie/Odometer",
     "api": "https://github.com/bluerobotics/BlueOS-docker"
 }
+
+async def websocket_handler(websocket):
+    """Stream odometer metrics to Cockpit's data lake via WebSocket."""
+    logger.info("WebSocket client connected: %s", websocket.remote_address)
+    await websocket.send("odometer-connection-status=connected")
+
+    try:
+        while True:
+            with odometer_service.stats_lock:
+                armed_minutes = odometer_service.stats.get("armed_minutes", 0)
+                disarmed_minutes = odometer_service.stats.get("disarmed_minutes", 0)
+                total_wh = odometer_service.stats.get("total_wh_consumed", 0.0)
+
+            await websocket.send(f"odometer-armed-minutes={armed_minutes}")
+            await websocket.send(f"odometer-disarmed-minutes={disarmed_minutes}")
+            await websocket.send(f"odometer-total-wh={total_wh:.3f}")
+
+            await asyncio.sleep(WEBSOCKET_UPDATE_INTERVAL)
+    except ConnectionClosed:
+        logger.info("WebSocket client disconnected: %s", websocket.remote_address)
+
+
+async def websocket_main():
+    """Run the WebSocket server for Cockpit data lake streaming."""
+    async with websockets.serve(websocket_handler, "0.0.0.0", WEBSOCKET_PORT):
+        logger.info("WebSocket server started on ws://0.0.0.0:%s", WEBSOCKET_PORT)
+        await asyncio.Future()
+
+
+def start_websocket_server():
+    """Start the WebSocket server in its own event loop."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(websocket_main())
 
 class OdometerService:
     def __init__(self):
@@ -657,6 +696,10 @@ class OdometerService:
 
 # Initialize the service
 odometer_service = OdometerService()
+
+# Start WebSocket server in background thread for Cockpit data lake
+websocket_thread = threading.Thread(target=start_websocket_server, daemon=True)
+websocket_thread.start()
 
 @app.route('/stats')
 def get_stats():

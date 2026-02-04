@@ -14,9 +14,11 @@ RUN pip install --no-cache-dir \
     flask==3.0.0 \
     werkzeug==3.0.1 \
     requests==2.31.0 \
+    websockets \
     --extra-index-url https://www.piwheels.org/simple
 
 EXPOSE 80/tcp
+EXPOSE 8765/tcp
 
 # Healthcheck to verify the service is running
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
@@ -30,6 +32,8 @@ LABEL permissions='\
 {\
   "ExposedPorts": {\
     "80/tcp": {}\
+    ,\
+    "8765/tcp": {}\
   },\
   "HostConfig": {\
     "CpuPeriod": 100000,\
@@ -38,6 +42,11 @@ LABEL permissions='\
     "ExtraHosts": ["host.docker.internal:host-gateway"],\
     "PortBindings": {\
       "80/tcp": [\
+        {\
+          "HostPort": ""\
+        }\
+      ],\
+      "8765/tcp": [\
         {\
           "HostPort": ""\
         }\
