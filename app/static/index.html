@@ -16,16 +16,17 @@
         }
         .logo-wrapper {
             width: 100%;
-            max-width: 160px;
-            max-height: 120px;
+            height: 100%;
+            max-width: none;
+            max-height: none;
             display: flex;
             align-items: center;
             justify-content: center;
+            flex: 1;
         }
         .app-logo {
             width: 100%;
-            height: auto;
-            max-height: 120px;
+            height: 100%;
             object-fit: contain;
         }
         .stat-value {
@@ -97,7 +98,7 @@
                     <!-- Header: Logo + Stats + Pie Chart -->
                     <v-row dense>
                         <!-- Logo -->
-                        <v-col cols="12" sm="3" class="d-flex align-center justify-center pa-2">
+                        <v-col cols="12" sm="3" class="d-flex align-stretch justify-center pa-2">
                             <div class="logo-wrapper">
                                 <img src="/static/Odometer_logo.png" alt="Odometer Logo" class="app-logo">
                             </div>
@@ -1317,7 +1318,7 @@
                                 this.usage = response.data.data.completed_missions;
                                 
                                 // Combine current and completed usage sessions
-                                this.allUsage = [
+                                const combinedUsage = [
                                     ...(this.currentUsage ? [{
                                         ...this.currentUsage,
                                         isCurrent: true,
@@ -1328,6 +1329,16 @@
                                         isCurrent: false
                                     }))
                                 ];
+
+                                // Sort newest-first by end time, then start time
+                                this.allUsage = combinedUsage.sort((a, b) => {
+                                    const aEnd = a.end_time ? new Date(a.end_time).getTime() : 0;
+                                    const bEnd = b.end_time ? new Date(b.end_time).getTime() : 0;
+                                    if (aEnd !== bEnd) return bEnd - aEnd;
+                                    const aStart = a.start_time ? new Date(a.start_time).getTime() : 0;
+                                    const bStart = b.start_time ? new Date(b.start_time).getTime() : 0;
+                                    return bStart - aStart;
+                                });
                                 
                                 // Update chart with current usage data
                                 this.updateHistoryChart();
