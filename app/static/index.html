@@ -10,27 +10,82 @@
     <link href="https://cdn.jsdelivr.net/npm/@mdi/font@6.x/css/materialdesignicons.min.css" rel="stylesheet">
     <!-- Custom styles -->
     <style>
-        .stat-card {
-            transition: all 0.3s;
+        .stat-item {
+            text-align: center;
+            padding: 8px 4px;
         }
-        .stat-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 12px 20px rgba(0, 0, 0, 0.15);
+        .logo-wrapper {
+            width: 100%;
+            max-width: 160px;
+            max-height: 120px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
-        .number-display {
-            font-size: 32px;
+        .app-logo {
+            width: 100%;
+            height: auto;
+            max-height: 120px;
+            object-fit: contain;
+        }
+        .stat-value {
+            font-size: 1.4rem;
             font-weight: bold;
+            line-height: 1.2;
         }
-        .timer-display {
-            font-size: 24px;
-            font-weight: bold;
+        .stat-label {
+            font-size: 0.75rem;
+            opacity: 0.8;
+            margin-top: 2px;
         }
-        .maintenance-card {
-            transition: all 0.3s;
+        .stat-icon {
+            font-size: 1.2rem !important;
+            margin-bottom: 4px;
+        }
+        .compact-card-title {
+            padding: 8px 16px !important;
+            min-height: unset !important;
+        }
+        .compact-card-title .v-icon {
+            font-size: 20px !important;
         }
         .maintenance-table {
             border-radius: 8px;
             overflow: hidden;
+        }
+        .v-data-table td, .v-data-table th {
+            padding: 0 8px !important;
+        }
+        /* Stacked bar chart styles */
+        .usage-bar-container {
+            width: 100%;
+            height: 36px;
+            border-radius: 4px;
+            overflow: hidden;
+            display: flex;
+            background: #e0e0e0;
+        }
+        .usage-bar-segment {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 0.75rem;
+            font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            padding: 0 8px;
+            min-width: 0;
+        }
+        .usage-bar-armed {
+            background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%);
+        }
+        .usage-bar-disarmed {
+            background: linear-gradient(135deg, #FF9800 0%, #f57c00 100%);
+        }
+        .usage-bar-label {
+            text-shadow: 0 1px 2px rgba(0,0,0,0.3);
         }
     </style>
 </head>
@@ -38,199 +93,172 @@
     <div id="app">
         <v-app :theme="isDarkMode ? 'dark' : 'light'">
             <v-main>
-                <v-container fluid>
-                    <!-- Move Pie Chart and Logo to top -->
-                    <v-row>
-                        <v-col cols="12" md="4" class="d-flex align-center justify-center">
-                            <img src="/static/extension_logo.png" alt="Odometer Logo" style="width: 100%; max-width: 200px;">
+                <v-container fluid class="pa-3">
+                    <!-- Header: Logo + Stats + Pie Chart -->
+                    <v-row dense>
+                        <!-- Logo -->
+                        <v-col cols="12" sm="3" class="d-flex align-center justify-center pa-2">
+                            <div class="logo-wrapper">
+                                <img src="/static/Odometer_logo.png" alt="Odometer Logo" class="app-logo">
+                            </div>
                         </v-col>
-                        <v-col cols="12" md="8">
-                            <v-card elevation="4">
-                                <v-card-title class="blue-grey white--text">
-                                    <v-icon large color="white" class="mr-2">mdi-chart-pie</v-icon>
-                                    Vehicle Usage Distribution
-                                </v-card-title>
-                                <v-card-text class="text-center pa-5">
-                                    <div style="position: relative; height: 200px; width: 100%; margin: 0 auto; max-width: 350px; z-index: 1; padding: 0;">
-                                        <canvas id="usageChart"></canvas>
+                        <!-- Compact Stats Grid -->
+                        <v-col cols="12" sm="5">
+                            <v-card elevation="2" class="pa-2">
+                                <v-row dense no-gutters>
+                                    <v-col cols="4" class="stat-item">
+                                        <v-icon class="stat-icon" color="primary">mdi-timer</v-icon>
+                                        <div class="stat-value primary--text">{{ formatTime(stats.total_minutes) }}</div>
+                                        <div class="stat-label">Total Uptime</div>
+                                    </v-col>
+                                    <v-col cols="4" class="stat-item">
+                                        <v-icon class="stat-icon" color="success">mdi-shield-lock</v-icon>
+                                        <div class="stat-value success--text">{{ formatTime(stats.armed_minutes) }}</div>
+                                        <div class="stat-label">Armed</div>
+                                    </v-col>
+                                    <v-col cols="4" class="stat-item">
+                                        <v-icon class="stat-icon" color="orange">mdi-shield-off</v-icon>
+                                        <div class="stat-value orange--text">{{ formatTime(stats.disarmed_minutes) }}</div>
+                                        <div class="stat-label">Disarmed</div>
+                                    </v-col>
+                                    <v-col cols="4" class="stat-item">
+                                        <v-icon class="stat-icon" color="teal">mdi-battery</v-icon>
+                                        <div class="stat-value teal--text">{{ stats.last_voltage.toFixed(1) }}V</div>
+                                        <div class="stat-label">Voltage</div>
+                                    </v-col>
+                                    <v-col cols="4" class="stat-item">
+                                        <v-icon class="stat-icon" color="deep-orange">mdi-thermometer</v-icon>
+                                        <div class="stat-value deep-orange--text">{{ stats.cpu_temp.toFixed(0) }}°C</div>
+                                        <div class="stat-label">CPU Temp</div>
+                                    </v-col>
+                                    <v-col cols="4" class="stat-item">
+                                        <v-icon class="stat-icon" color="indigo">mdi-battery-sync</v-icon>
+                                        <div class="stat-value indigo--text">{{ stats.battery_swaps }}</div>
+                                        <div class="stat-label">Swaps</div>
+                                    </v-col>
+                                    <v-col cols="6" class="stat-item">
+                                        <v-icon class="stat-icon" color="purple">mdi-flash</v-icon>
+                                        <div class="stat-value purple--text">{{ stats.current_battery_wh.toFixed(1) }} Wh</div>
+                                        <div class="stat-label">Current Battery</div>
+                                    </v-col>
+                                    <v-col cols="6" class="stat-item">
+                                        <v-icon class="stat-icon" color="blue-grey">mdi-sigma</v-icon>
+                                        <div class="stat-value blue-grey--text">{{ stats.total_wh_consumed.toFixed(1) }} Wh</div>
+                                        <div class="stat-label">Lifetime Energy</div>
+                                    </v-col>
+                                </v-row>
+                            </v-card>
+                        </v-col>
+                        <!-- Armed/Disarmed Bar -->
+                        <v-col cols="12" sm="4">
+                            <v-card elevation="2" class="pa-2 d-flex flex-column justify-center" style="height: 100%;">
+                                <div class="caption text-center mb-1" style="opacity: 0.7;">Armed vs Disarmed Time</div>
+                                <div class="usage-bar-container">
+                                    <div 
+                                        class="usage-bar-segment usage-bar-armed"
+                                        :style="{ width: armedPercent + '%' }"
+                                        v-if="stats.armed_minutes > 0"
+                                    >
+                                        <span class="usage-bar-label" v-if="armedPercent > 15">
+                                            <v-icon x-small color="white">mdi-shield-lock</v-icon>
+                                            {{ formatTimeCompact(stats.armed_minutes) }}
+                                        </span>
                                     </div>
-                                    <div class="caption mt-4 text-center">Proportion of time spent Armed vs Disarmed</div>
-                                </v-card-text>
+                                    <div 
+                                        class="usage-bar-segment usage-bar-disarmed"
+                                        :style="{ width: disarmedPercent + '%' }"
+                                        v-if="stats.disarmed_minutes > 0"
+                                    >
+                                        <span class="usage-bar-label" v-if="disarmedPercent > 15">
+                                            <v-icon x-small color="white">mdi-shield-off</v-icon>
+                                            {{ formatTimeCompact(stats.disarmed_minutes) }}
+                                        </span>
+                                    </div>
+                                </div>
+                                <div class="d-flex justify-space-between mt-1">
+                                    <div class="caption">
+                                        <v-icon x-small color="success">mdi-square</v-icon>
+                                        Armed: {{ formatTimeCompact(stats.armed_minutes) }} ({{ armedPercent.toFixed(1) }}%)
+                                    </div>
+                                    <div class="caption">
+                                        <v-icon x-small color="orange">mdi-square</v-icon>
+                                        Disarmed: {{ formatTimeCompact(stats.disarmed_minutes) }} ({{ disarmedPercent.toFixed(1) }}%)
+                                    </div>
+                                </div>
                             </v-card>
                         </v-col>
                     </v-row>
 
-                    <!-- Stats Section -->
-                    <v-row class="mt-6">
-                        <v-col cols="12" md="4">
-                            <v-card class="stat-card" elevation="4">
-                                <v-card-title style="background-color: #135da3" class="white--text">
-                                    <v-icon large color="white" class="mr-2">mdi-timer</v-icon>
-                                    Total Uptime
-                                </v-card-title>
-                                <v-card-text class="text-center pa-5">
-                                    <div class="timer-display">
-                                        {{ formatTime(stats.total_minutes) }}
-                                    </div>
-                                    <div class="caption mt-2">Total vehicle uptime</div>
-                                </v-card-text>
-                            </v-card>
-                        </v-col>
-
-                        <v-col cols="12" md="4">
-                            <v-card class="stat-card" elevation="4">
-                                <v-card-title style="background-color: #2699d0" class="white--text">
-                                    <v-icon large color="white" class="mr-2">mdi-shield-lock</v-icon>
-                                    Armed Time
-                                </v-card-title>
-                                <v-card-text class="text-center pa-5">
-                                    <div class="timer-display">
-                                        {{ formatTime(stats.armed_minutes) }}
-                                    </div>
-                                    <div class="caption mt-2">Time vehicle has been armed</div>
-                                </v-card-text>
-                            </v-card>
-                        </v-col>
-
-                        <v-col cols="12" md="4">
-                            <v-card class="stat-card" elevation="4">
-                                <v-card-title style="background-color: #4fa483" class="white--text">
-                                    <v-icon large color="white" class="mr-2">mdi-battery-sync</v-icon>
-                                    Battery Swaps
-                                </v-card-title>
-                                <v-card-text class="text-center pa-5">
-                                    <div class="number-display">
-                                        {{ stats.battery_swaps }}
-                                    </div>
-                                    <div class="caption mt-2">Number of battery swaps detected</div>
-                                </v-card-text>
-                            </v-card>
-                        </v-col>
-                    </v-row>
-
-                    <v-row class="mt-4">
-                        <v-col cols="12" md="4">
-                            <v-card class="stat-card" elevation="4">
-                                <v-card-title style="background-color: #3699d0" class="white--text">
-                                    <v-icon large color="white" class="mr-2">mdi-battery</v-icon>
-                                    Battery Voltage
-                                </v-card-title>
-                                <v-card-text class="text-center pa-5">
-                                    <div class="number-display">
-                                        {{ stats.last_voltage.toFixed(2) }}V
-                                    </div>
-                                    <div class="caption mt-2">Current battery voltage</div>
-                                </v-card-text>
-                            </v-card>
-                        </v-col>
-
-                        <v-col cols="12" md="4">
-                            <v-card class="stat-card" elevation="4">
-                                <v-card-title style="background-color: #012f46" class="white--text">
-                                    <v-icon large color="white" class="mr-2">mdi-thermometer</v-icon>
-                                    CPU Temperature
-                                </v-card-title>
-                                <v-card-text class="text-center pa-5">
-                                    <div class="number-display">
-                                        {{ stats.cpu_temp.toFixed(1) }}°C
-                                    </div>
-                                    <div class="caption mt-2">Current CPU temperature</div>
-                                </v-card-text>
-                            </v-card>
-                        </v-col>
-
-                        <v-col cols="12" md="4">
-                            <v-card class="stat-card" elevation="4">
-                                <v-card-title style="background-color: #135da3" class="white--text">
-                                    <v-icon large color="white" class="mr-2">mdi-battery-charging</v-icon>
-                                    Energy Consumed
-                                </v-card-title>
-                                <v-card-text class="text-center pa-5">
-                                    <div class="number-display">
-                                        {{ stats.current_battery_wh.toFixed(2) }} Wh
-                                    </div>
-                                    <div class="caption mt-2">Current battery energy consumed</div>
-                                    <div class="caption mt-1">
-                                        <v-icon small>mdi-history</v-icon>
-                                        Lifetime: {{ stats.total_wh_consumed.toFixed(2) }} Wh
-                                    </div>
-                                </v-card-text>
-                            </v-card>
-                        </v-col>
-                    </v-row>
-
-                    <!-- Historical Chart for Voltage and Temperature -->
-                    <v-row class="mt-6">
+                    <!-- Historical Chart -->
+                    <v-row dense class="mt-2">
                         <v-col cols="12">
-                            <v-card elevation="4">
-                                <v-card-title class="teal darken-1 white--text">
-                                    <v-icon large color="white" class="mr-2">mdi-chart-line</v-icon>
-                                    Current Session Data
+                            <v-card elevation="2">
+                                <v-card-title class="compact-card-title teal darken-1 white--text py-1">
+                                    <v-icon color="white" class="mr-2">mdi-chart-line</v-icon>
+                                    Last 15 Minutes
+                                    <v-progress-circular
+                                        v-if="loading"
+                                        indeterminate
+                                        color="white"
+                                        size="16"
+                                        width="2"
+                                        class="ml-2"
+                                    ></v-progress-circular>
                                 </v-card-title>
-                                <v-card-text class="text-center pa-5">
-                                    <div style="position: relative; height: 400px; width: 100%;">
+                                <v-card-text class="pa-2">
+                                    <div style="position: relative; height: 200px; width: 100%;">
                                         <canvas id="historyChart"></canvas>
-                                        <v-progress-circular
-                                            v-if="loading"
-                                            indeterminate
-                                            color="primary"
-                                            size="32"
-                                            width="3"
-                                            style="position: absolute; top: 10px; right: 10px;"
-                                        ></v-progress-circular>
                                     </div>
-                                    <div class="caption mt-4 text-center">CPU Temperature and Battery Voltage for current session</div>
                                 </v-card-text>
                             </v-card>
                         </v-col>
                     </v-row>
 
-                    <!-- Usage Table -->
-                    <v-row class="mt-6">
+                    <!-- Usage History & Export -->
+                    <v-row dense class="mt-2">
                         <v-col cols="12">
-                            <v-card elevation="4">
-                                <v-card-title class="teal darken-1 white--text">
-                                    <v-icon large color="white" class="mr-2">mdi-history</v-icon>
+                            <v-card elevation="2">
+                                <v-card-title class="compact-card-title teal darken-1 white--text py-1">
+                                    <v-icon color="white" class="mr-2">mdi-history</v-icon>
                                     Usage History
+                                    <v-spacer></v-spacer>
+                                    <v-btn x-small color="primary" class="mr-1" @click="downloadOdometerData">
+                                        <v-icon x-small left>mdi-download</v-icon>CSV
+                                    </v-btn>
+                                    <v-btn x-small color="error" @click="showClearDialog">
+                                        <v-icon x-small left>mdi-delete</v-icon>Clear
+                                    </v-btn>
                                 </v-card-title>
-                                <v-card-text>
+                                <v-card-text class="pa-0">
                                     <v-data-table
                                         :headers="usageHeaders"
                                         :items="allUsage"
-                                        :items-per-page="5"
-                                        class="elevation-1"
-                                        :footer-props="{
-                                            'items-per-page-options': [5, 10, 15, -1],
-                                            'items-per-page-text': 'Usage sessions per page'
-                                        }"
+                                        :items-per-page="3"
+                                        dense
+                                        class="elevation-0"
+                                        :footer-props="{ 'items-per-page-options': [3, 5, 10] }"
                                     >
                                         <template v-slot:item.start_time="{ item }">
-                                            {{ formatDate(item.start_time) }}
+                                            {{ formatDateShort(item.start_time) }}
                                         </template>
                                         <template v-slot:item.end_time="{ item }">
-                                            {{ item.isCurrent ? 'Ongoing' : formatDate(item.end_time) }}
+                                            {{ item.isCurrent ? 'Now' : formatDateShort(item.end_time) }}
                                         </template>
                                         <template v-slot:item.duration="{ item }">
-                                            {{ item.isCurrent ? 'Ongoing' : calculateDuration(item.start_time, item.end_time) }}
+                                            {{ item.isCurrent ? '-' : calculateDuration(item.start_time, item.end_time) }}
                                         </template>
                                         <template v-slot:item.start_voltage="{ item }">
-                                            {{ item.start_voltage.toFixed(2) }}V
+                                            {{ item.start_voltage.toFixed(1) }}V
                                         </template>
                                         <template v-slot:item.end_voltage="{ item }">
-                                            {{ item.isCurrent ? stats.last_voltage.toFixed(2) : item.end_voltage.toFixed(2) }}V
-                                        </template>
-                                        <template v-slot:item.start_cpu_temp="{ item }">
-                                            {{ item.start_cpu_temp.toFixed(1) }}°C
-                                        </template>
-                                        <template v-slot:item.end_cpu_temp="{ item }">
-                                            {{ item.isCurrent ? stats.cpu_temp.toFixed(1) : item.end_cpu_temp.toFixed(1) }}°C
+                                            {{ item.isCurrent ? stats.last_voltage.toFixed(1) : item.end_voltage.toFixed(1) }}V
                                         </template>
                                         <template v-slot:item.total_ah="{ item }">
                                             {{ item.isCurrent ? (stats.current_battery_wh / stats.last_voltage).toFixed(2) : item.total_ah.toFixed(2) }}Ah
                                         </template>
                                         <template v-slot:item.status="{ item }">
-                                            <v-chip :color="item.isCurrent ? 'success' : 'grey'" dark small>
-                                                {{ item.isCurrent ? 'Current' : 'Completed' }}
+                                            <v-chip :color="item.isCurrent ? 'success' : 'grey'" dark x-small>
+                                                {{ item.isCurrent ? 'Active' : 'Done' }}
                                             </v-chip>
                                         </template>
                                     </v-data-table>
@@ -239,130 +267,77 @@
                         </v-col>
                     </v-row>
 
-                    <!-- Data Export Section -->
-                    <v-row class="mt-6">
+                    <!-- Maintenance Section (Combined) -->
+                    <v-row dense class="mt-2 mb-2">
                         <v-col cols="12">
-                            <v-card elevation="4">
-                                <v-card-title class="teal white--text">
-                                    <v-icon large color="white" class="mr-2">mdi-file-download</v-icon>
-                                    Export & Manage Data
-                                </v-card-title>
-                                <v-card-text class="text-center pt-6 pb-5 px-5">
-                                    <v-row>
-                                        <v-col cols="12" md="4">
-                                            <v-btn block color="primary" @click="downloadOdometerData">
-                                                <v-icon left>mdi-download</v-icon>
-                                                Download Odometer Data
-                                            </v-btn>
-                                        </v-col>
-                                        <v-col cols="12" md="4">
-                                            <v-btn block color="secondary" @click="downloadMaintenanceData">
-                                                <v-icon left>mdi-download</v-icon>
-                                                Download Maintenance Log
-                                            </v-btn>
-                                        </v-col>
-                                        <v-col cols="12" md="4">
-                                            <v-btn block color="error" @click="showClearDialog">
-                                                <v-icon left>mdi-delete</v-icon>
-                                                Clear Temperature & Voltage History
-                                            </v-btn>
-                                        </v-col>
-                                    </v-row>
-                                </v-card-text>
-                            </v-card>
-                        </v-col>
-                    </v-row>
-
-                    <!-- Maintenance Section -->
-                    <v-row class="mt-6">
-                        <v-col cols="12">
-                            <v-card class="maintenance-card" elevation="4">
-                                <v-card-title class="indigo white--text">
-                                    <v-icon large color="white" class="mr-2">mdi-tools</v-icon>
+                            <v-card elevation="2">
+                                <v-card-title class="compact-card-title indigo white--text py-1">
+                                    <v-icon color="white" class="mr-2">mdi-tools</v-icon>
                                     Maintenance Log
+                                    <v-spacer></v-spacer>
+                                    <v-btn x-small color="primary" @click="downloadMaintenanceData">
+                                        <v-icon x-small left>mdi-download</v-icon>CSV
+                                    </v-btn>
                                 </v-card-title>
-                                <v-card-text>
-                                    <v-row>
-                                        <v-col cols="12">
-                                            <v-data-table
-                                                :headers="maintenanceHeaders"
-                                                :items="maintenanceLog"
-                                                :items-per-page="5"
-                                                class="maintenance-table"
-                                                :footer-props="{
-                                                    'items-per-page-options': [5, 10, 15, -1],
-                                                    'items-per-page-text': 'Records per page'
-                                                }"
-                                            >
-                                                <template v-slot:item.timestamp="{ item }">
-                                                    {{ formatDate(item.timestamp) }}
-                                                </template>
-                                                <template v-slot:item.event_type="{ item }">
-                                                    <v-chip :color="getEventTypeColor(item.event_type)" dark>
-                                                        {{ item.event_type }}
-                                                    </v-chip>
-                                                </template>
-                                                <template v-slot:item.actions="{ item }">
-                                                    <v-icon small class="mr-2" @click="openEditDialog(item)">
-                                                        mdi-pencil
-                                                    </v-icon>
-                                                    <v-icon small color="error" @click="openDeleteDialog(item)">
-                                                        mdi-delete
-                                                    </v-icon>
-                                                </template>
-                                            </v-data-table>
-                                        </v-col>
-                                    </v-row>
-                                </v-card-text>
-                            </v-card>
-                        </v-col>
-                    </v-row>
-
-                    <!-- Add Maintenance Record Section -->
-                    <v-row class="mt-6 mb-10">
-                        <v-col cols="12">
-                            <v-card elevation="4">
-                                <v-card-title class="blue darken-2 white--text">
-                                    <v-icon large color="white" class="mr-2">mdi-plus-circle</v-icon>
-                                    Add Maintenance Record
-                                </v-card-title>
-                                <v-card-text>
+                                <v-card-text class="pa-2">
+                                    <!-- Add Form (inline) -->
                                     <v-form ref="form" v-model="validForm" @submit.prevent="submitMaintenanceForm">
-                                        <v-row>
-                                            <v-col cols="12" md="4">
+                                        <v-row dense align="center">
+                                            <v-col cols="12" sm="3">
                                                 <v-select
                                                     v-model="newRecord.event_type"
                                                     :items="eventTypes"
-                                                    label="Event Type"
-                                                    :rules="[v => !!v || 'Event type is required']"
-                                                    required
+                                                    label="Type"
+                                                    dense
+                                                    hide-details
+                                                    outlined
                                                 ></v-select>
                                             </v-col>
-                                            <v-col cols="12" md="8">
-                                                <v-textarea
+                                            <v-col cols="12" sm="7">
+                                                <v-text-field
                                                     v-model="newRecord.details"
                                                     label="Details"
-                                                    :rules="[v => !!v || 'Details are required']"
-                                                    required
-                                                    rows="3"
-                                                    counter
-                                                ></v-textarea>
+                                                    dense
+                                                    hide-details
+                                                    outlined
+                                                ></v-text-field>
                                             </v-col>
-                                        </v-row>
-                                        <v-row>
-                                            <v-col cols="12" class="text-center">
+                                            <v-col cols="12" sm="2">
                                                 <v-btn 
+                                                    block
+                                                    small
                                                     color="success" 
-                                                    large 
-                                                    :disabled="!validForm"
+                                                    :disabled="!newRecord.event_type || !newRecord.details"
                                                     @click="submitMaintenanceForm"
                                                 >
-                                                    <v-icon left>mdi-content-save</v-icon>
-                                                    Save Record
+                                                    <v-icon small left>mdi-plus</v-icon>Add
                                                 </v-btn>
                                             </v-col>
                                         </v-row>
                                     </v-form>
+                                    <v-divider class="my-2"></v-divider>
+                                    <!-- Maintenance Table -->
+                                    <v-data-table
+                                        :headers="maintenanceHeaders"
+                                        :items="maintenanceLog"
+                                        :items-per-page="5"
+                                        dense
+                                        class="elevation-0"
+                                        :footer-props="{ 'items-per-page-options': [5, 10, 15] }"
+                                    >
+                                        <template v-slot:item.timestamp="{ item }">
+                                            {{ formatDateShort(item.timestamp) }}
+                                        </template>
+                                        <template v-slot:item.event_type="{ item }">
+                                            <v-chip :color="getEventTypeColor(item.event_type)" dark x-small>
+                                                {{ item.event_type }}
+                                            </v-chip>
+                                        </template>
+                                        <template v-slot:item.actions="{ item }">
+                                            <v-icon x-small class="mr-1" @click="openEditDialog(item)">mdi-pencil</v-icon>
+                                            <v-icon x-small color="error" @click="openDeleteDialog(item)">mdi-delete</v-icon>
+                                        </template>
+                                    </v-data-table>
                                 </v-card-text>
                             </v-card>
                         </v-col>
@@ -579,7 +554,6 @@
                     usageChart: null,
                     historyChart: null,
                     historicalData: [],
-                    timeRange: '15m',
                     loading: false,
                     editDialog: {
                         show: false,
@@ -696,14 +670,12 @@
                         }
                     },
                     usageHeaders: [
-                        { text: 'Start Time', value: 'start_time' },
-                        { text: 'End Time', value: 'end_time' },
+                        { text: 'Start', value: 'start_time' },
+                        { text: 'End', value: 'end_time' },
                         { text: 'Duration', value: 'duration' },
-                        { text: 'Start Voltage', value: 'start_voltage' },
-                        { text: 'End Voltage', value: 'end_voltage' },
-                        { text: 'Start CPU Temp', value: 'start_cpu_temp' },
-                        { text: 'End CPU Temp', value: 'end_cpu_temp' },
-                        { text: 'Total Ah', value: 'total_ah' },
+                        { text: 'Start V', value: 'start_voltage' },
+                        { text: 'End V', value: 'end_voltage' },
+                        { text: 'Ah', value: 'total_ah' },
                         { text: 'Status', value: 'status' }
                     ],
                     usage: [],
@@ -764,15 +736,27 @@
                 }
             },
             watch: {
-                timeRange() {
-                    // Always get fresh data when changing time ranges
-                    this.fetchHistoricalData();
-                },
                 isDarkMode() {
                     // Update Vuetify theme when dark mode changes
                     this.$vuetify.theme.dark = this.isDarkMode;
                     // Update chart themes
                     this.updateChartsTheme();
+                }
+            },
+            computed: {
+                armedPercent() {
+                    const armed = Number(this.stats.armed_minutes || 0);
+                    const disarmed = Number(this.stats.disarmed_minutes || 0);
+                    const total = armed + disarmed;
+                    if (total <= 0) return 0;
+                    return (armed / total) * 100;
+                },
+                disarmedPercent() {
+                    const armed = Number(this.stats.armed_minutes || 0);
+                    const disarmed = Number(this.stats.disarmed_minutes || 0);
+                    const total = armed + disarmed;
+                    if (total <= 0) return 0;
+                    return (disarmed / total) * 100;
                 }
             },
             methods: {
@@ -933,9 +917,8 @@
                                 this.stats = response.data.data;
                                 this.updateUsageChart();
                                 
-                                // If we're in the 15-minute view and values changed, immediately 
-                                // add the new point to the chart for real-time updates
-                                if (this.timeRange === '15m' && this.historyChart && 
+                                // If values changed, immediately add the new point to the chart for real-time updates
+                                if (this.historyChart && 
                                     (oldTemp !== this.stats.cpu_temp || oldVoltage !== this.stats.last_voltage)) {
                                     
                                     const now = new Date();
@@ -1026,6 +1009,16 @@
                     
                     return result;
                 },
+                formatTimeCompact(minutes) {
+                    const total = Math.max(0, Math.floor(Number(minutes || 0)));
+                    const days = Math.floor(total / (60 * 24));
+                    const hours = Math.floor((total % (60 * 24)) / 60);
+                    const mins = total % 60;
+
+                    if (days > 0) return `${days}d ${hours}h`;
+                    if (hours > 0) return `${hours}h ${mins}m`;
+                    return `${mins}m`;
+                },
                 formatDate(isoString) {
                     try {
                         const date = new Date(isoString);
@@ -1041,6 +1034,19 @@
                         }).format(date);
                     } catch (e) {
                         console.error('Error formatting date:', e);
+                        return isoString;
+                    }
+                },
+                formatDateShort(isoString) {
+                    try {
+                        const date = new Date(isoString);
+                        return new Intl.DateTimeFormat(undefined, {
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                        }).format(date);
+                    } catch (e) {
                         return isoString;
                     }
                 },
@@ -1061,6 +1067,9 @@
                 },
                 updateUsageChart() {
                     const ctx = document.getElementById('usageChart');
+                    // The UI no longer includes this canvas (we use the stacked bar instead).
+                    // Guard to avoid runtime errors if the element isn't present.
+                    if (!ctx) return;
                     const armedMinutes = this.stats.armed_minutes || 0;
                     const disarmedMinutes = this.stats.disarmed_minutes || 0;
                     
@@ -1111,26 +1120,19 @@
                         responsive: true,
                         maintainAspectRatio: false,
                         animation: { duration: 500 },
-                        cutout: '60%',
+                        cutout: '50%',
                         layout: {
-                            padding: {
-                                top: 0,
-                                bottom: 0,
-                                left: 0,
-                                right: 0
-                            }
+                            padding: 0
                         },
                         plugins: {
                             legend: {
                                 display: !isPlaceholder,
                                 position: 'right',
                                 labels: {
-                                    padding: 5,
+                                    padding: 4,
                                     color: this.isDarkMode ? '#ffffff' : '#666666',
-                                    font: {
-                                        size: 11
-                                    },
-                                    boxWidth: 10
+                                    font: { size: 10 },
+                                    boxWidth: 8
                                 }
                             },
                             tooltip: {
@@ -1267,15 +1269,13 @@
                     }
 
                     try {
-                        // Get the current usage session's start time
-                        const usageStartTime = this.currentUsage ? new Date(this.currentUsage.start_time) : null;
+                        // Filter data to show the last 15 minutes, regardless of session
+                        const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
                         
-                        // Filter data for current usage session only
                         const filteredData = this.historicalData
                             .filter(d => {
-                                if (!usageStartTime) return false;
                                 const timestamp = new Date(d.timestamp);
-                                return timestamp >= usageStartTime;
+                                return timestamp >= fifteenMinutesAgo;
                             })
                             .sort((a, b) => a.timestamp - b.timestamp);
 
@@ -1408,6 +1408,54 @@
                     .finally(() => {
                         this.deleteDialog.show = false;
                         this.resetDeleteDialog();
+                    });
+                },
+                openEditDialog(item) {
+                    this.editDialog.item = item;
+                    // Parse the ISO timestamp to get date and time components
+                    try {
+                        const date = new Date(item.timestamp);
+                        // Format date as YYYY-MM-DD for the date input
+                        this.editDialog.date = date.toISOString().split('T')[0];
+                        // Format time as HH:MM for the time input
+                        this.editDialog.time = date.toTimeString().slice(0, 5);
+                    } catch (e) {
+                        console.error('Error parsing timestamp:', e);
+                        this.editDialog.date = '';
+                        this.editDialog.time = '';
+                    }
+                    this.editDialog.show = true;
+                },
+                saveEditedRecord() {
+                    if (!this.editDialog.item || !this.editDialog.date || !this.editDialog.time) {
+                        this.showSnackbar('Please fill in both date and time', 'error');
+                        return;
+                    }
+                    
+                    // Combine date and time into an ISO timestamp
+                    const newTimestamp = new Date(`${this.editDialog.date}T${this.editDialog.time}:00`).toISOString();
+                    
+                    axios.post('/maintenance/update', {
+                        original_timestamp: this.editDialog.item.timestamp,
+                        new_timestamp: newTimestamp
+                    })
+                    .then(response => {
+                        if (response.data.status === 'success') {
+                            this.showSnackbar('Maintenance record updated successfully');
+                            this.fetchMaintenanceLog();
+                        } else {
+                            this.showSnackbar(response.data.message || 'Failed to update record', 'error');
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error updating maintenance record:', error);
+                        this.showSnackbar('Failed to update record', 'error');
+                    })
+                    .finally(() => {
+                        this.editDialog.show = false;
+                        this.editDialog.item = null;
+                        this.editDialog.date = '';
+                        this.editDialog.time = '';
                     });
                 },
             }
