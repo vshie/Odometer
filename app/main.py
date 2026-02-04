@@ -46,9 +46,19 @@ MAVLINK_ENDPOINTS = [
 UPDATE_INTERVAL = 60  # Update every 60 seconds (1 minute)
 ARMED_FLAG = 128  # MAV_MODE_FLAG_SAFETY_ARMED (0b10000000)
 MAX_TIME_JUMP_MINUTES = 5  # Maximum acceptable time jump in minutes
-PORT = 7042  # Port to run the server on
+PORT = 80  # Port to run the server on
 
 app = Flask(__name__, static_folder='static')
+
+REGISTER_SERVICE = {
+    "name": "Odometer",
+    "description": "Track vehicle usage statistics, armed time, battery swaps, and maintenance history with beautiful visualizations",
+    "icon": "mdi-altimeter",
+    "company": "Blue Robotics",
+    "version": "0.1.0",
+    "webpage": "https://github.com/vshie/Odometer",
+    "api": "https://github.com/bluerobotics/BlueOS-docker"
+}
 
 class OdometerService:
     def __init__(self):
@@ -812,8 +822,7 @@ def download_maintenance():
 @app.route('/register_service')
 def register_service():
     """Register the extension as a service in BlueOS."""
-    response = send_from_directory('static', 'register_service')
-    # Add header to prevent BlueOS from wrapping the page
+    response = jsonify(REGISTER_SERVICE)
     response.headers['X-Frame-Options'] = 'ALLOWALL'
     return response
 

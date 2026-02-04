@@ -16,11 +16,11 @@ RUN pip install --no-cache-dir \
     requests==2.31.0 \
     --extra-index-url https://www.piwheels.org/simple
 
-EXPOSE 7042/tcp
+EXPOSE 80/tcp
 
 # Healthcheck to verify the service is running
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:7042/stats || exit 1
+    CMD curl -f http://localhost:80/stats || exit 1
 
 LABEL version="1.0.1"
 
@@ -29,7 +29,7 @@ ARG IMAGE_NAME
 LABEL permissions='\
 {\
   "ExposedPorts": {\
-    "7042/tcp": {}\
+    "80/tcp": {}\
   },\
   "HostConfig": {\
     "CpuPeriod": 100000,\
@@ -37,7 +37,7 @@ LABEL permissions='\
     "Binds":["/usr/blueos/extensions/odometer/data:/app/data", "/usr/blueos/extensions/odometer/logs:/app/logs"],\
     "ExtraHosts": ["host.docker.internal:host-gateway"],\
     "PortBindings": {\
-      "7042/tcp": [\
+      "80/tcp": [\
         {\
           "HostPort": ""\
         }\
