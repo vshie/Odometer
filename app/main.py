@@ -52,6 +52,7 @@ MAX_TIME_JUMP_MINUTES = 5  # Maximum acceptable time jump in minutes
 PORT = 80  # Port to run the server on
 WEBSOCKET_PORT = 8765  # Port for Cockpit data lake streaming
 WEBSOCKET_UPDATE_INTERVAL = 1.0  # Seconds between WebSocket updates
+DIVE_DEPTH_THRESHOLD = 1.0  # Depth threshold in meters to count as diving
 
 app = Flask(__name__, static_folder='static')
 
@@ -75,11 +76,15 @@ async def websocket_handler(websocket):
             with odometer_service.stats_lock:
                 armed_minutes = odometer_service.stats.get("armed_minutes", 0)
                 disarmed_minutes = odometer_service.stats.get("disarmed_minutes", 0)
+                dive_minutes = odometer_service.stats.get("dive_minutes", 0)
                 total_wh = odometer_service.stats.get("total_wh_consumed", 0.0)
+                current_depth = odometer_service.stats.get("last_depth", 0.0)
 
             await websocket.send(f"odometer-armed-minutes={armed_minutes}")
             await websocket.send(f"odometer-disarmed-minutes={disarmed_minutes}")
+            await websocket.send(f"odometer-dive-minutes={dive_minutes}")
             await websocket.send(f"odometer-total-wh={total_wh:.3f}")
+            await websocket.send(f"odometer-depth={current_depth:.2f}")
 
             await asyncio.sleep(WEBSOCKET_UPDATE_INTERVAL)
     except ConnectionClosed:
@@ -107,9 +112,11 @@ class OdometerService:
             'total_minutes': 0,
             'armed_minutes': 0,
             'disarmed_minutes': 0,
+            'dive_minutes': 0,  # Minutes spent at depth > DIVE_DEPTH_THRESHOLD
             'battery_swaps': 0,
             'startups': 0,
             'last_voltage': 0.0,
+            'last_depth': 0.0,  # Current depth in meters (positive = underwater)
             'cpu_temp': 0.0,
             'previous_batteries_wh': 0.0,  # Accumulated watt-hours from all previous (swapped) batteries
             'current_battery_wh': 0.0,  # Current battery watt-hours (from MAVLink current_consumed)
@@ -174,9 +181,14 @@ class OdometerService:
                 reader = csv.reader(f)
                 headers = next(reader)  # Get header row
                 
-                # Check if this is an old format file (has mah_consumed column)
-                if 'mah_consumed' in headers:
-                    logger.info("Detected old format CSV file, upgrading to new format")
+                needs_upgrade = False
+                
+                # Check if this is an old format file (has mah_consumed column or missing dive_minutes)
+                if 'mah_consumed' in headers or 'dive_minutes' not in headers:
+                    needs_upgrade = True
+                
+                if needs_upgrade:
+                    logger.info("Detected old format CSV file, upgrading to new format with dive tracking")
                     
                     # Read all existing data
                     rows = []
@@ -186,25 +198,35 @@ class OdometerService:
                     # Write back with new format
                     with open(ODOMETER_CSV, 'w', newline='') as f:
                         writer = csv.writer(f)
-                        # Write new header row
+                        # Write new header row with dive_minutes and depth
                         writer.writerow(['timestamp', 'total_minutes', 'armed_minutes', 'disarmed_minutes', 
-                                       'battery_swaps', 'startups', 'voltage', 'cpu_temp', 'wh_consumed', 'time_status'])
+                                       'dive_minutes', 'battery_swaps', 'startups', 'voltage', 'depth',
+                                       'cpu_temp', 'wh_consumed', 'current_ah', 'time_status'])
                         
-                        # Write existing data, removing mah_consumed column
+                        # Write existing data, adding dive_minutes and depth columns
                         for row in rows:
-                            # Keep all columns except mah_consumed
-                            new_row = row[:8]  # Keep up to cpu_temp
-                            if len(row) > 9:  # If wh_consumed exists
-                                new_row.append(row[9])  # Add wh_consumed
-                            else:
-                                new_row.append('0.0')  # Default to 0 if missing
-                            if len(row) > 10:  # If time_status exists
-                                new_row.append(row[10])  # Add time_status
-                            else:
-                                new_row.append('normal')  # Default to normal
+                            if len(row) < 4:
+                                continue  # Skip malformed rows
+                            
+                            # Build new row with dive_minutes inserted after disarmed_minutes
+                            new_row = [
+                                row[0] if len(row) > 0 else '',  # timestamp
+                                row[1] if len(row) > 1 else '0',  # total_minutes
+                                row[2] if len(row) > 2 else '0',  # armed_minutes
+                                row[3] if len(row) > 3 else '0',  # disarmed_minutes
+                                '0',  # dive_minutes (new, default to 0)
+                                row[4] if len(row) > 4 else '0',  # battery_swaps
+                                row[5] if len(row) > 5 else '0',  # startups
+                                row[6] if len(row) > 6 else '0.0',  # voltage
+                                '0.0',  # depth (new, default to 0)
+                                row[7] if len(row) > 7 else '',  # cpu_temp
+                                row[8] if len(row) > 8 else '0.0',  # wh_consumed
+                                row[9] if len(row) > 9 else '0.0',  # current_ah
+                                row[10] if len(row) > 10 else 'normal'  # time_status
+                            ]
                             writer.writerow(new_row)
                     
-                    logger.info("Successfully upgraded CSV file to new format")
+                    logger.info("Successfully upgraded CSV file to new format with dive tracking")
         except Exception as e:
             logger.error(f"Error upgrading CSV format: {e}")
     
@@ -214,8 +236,8 @@ class OdometerService:
             with open(ODOMETER_CSV, 'w', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow(['timestamp', 'total_minutes', 'armed_minutes', 'disarmed_minutes', 
-                               'battery_swaps', 'startups', 'voltage', 'cpu_temp', 'wh_consumed', 
-                               'current_ah', 'time_status'])
+                               'dive_minutes', 'battery_swaps', 'startups', 'voltage', 'depth',
+                               'cpu_temp', 'wh_consumed', 'current_ah', 'time_status'])
         else:
             # Check if this is an old format file and upgrade it if needed
             self.upgrade_csv_format()
@@ -239,13 +261,17 @@ class OdometerService:
                 headers = next(reader)  # Get header row
                 rows.append(headers)  # Keep header row
                 
+                # Determine format based on headers
+                has_dive_minutes = 'dive_minutes' in headers
+                min_columns = 11 if has_dive_minutes else 9
+                
                 for row in reader:
                     # Skip empty rows or rows with all empty values
                     if not row or all(cell.strip() == '' for cell in row):
                         continue
                     
-                    # Skip rows that don't have minimum required columns (at least 9)
-                    if len(row) < 9:
+                    # Skip rows that don't have minimum required columns
+                    if len(row) < min_columns:
                         continue
                     
                     # Skip rows with invalid timestamp
@@ -259,12 +285,25 @@ class OdometerService:
                         if row[1].strip(): int(row[1])  # total_minutes
                         if row[2].strip(): int(row[2])  # armed_minutes
                         if row[3].strip(): int(row[3])  # disarmed_minutes
-                        if row[4].strip(): int(row[4])  # battery_swaps
-                        if row[5].strip(): int(row[5])  # startups
-                        if row[6].strip(): float(row[6])  # voltage
-                        if row[7].strip(): float(row[7])  # cpu_temp
-                        if row[8].strip(): float(row[8])  # wh_consumed
-                        if len(row) > 9 and row[9].strip(): float(row[9])  # current_ah
+                        
+                        if has_dive_minutes:
+                            # New format with dive_minutes
+                            if row[4].strip(): int(row[4])  # dive_minutes
+                            if row[5].strip(): int(row[5])  # battery_swaps
+                            if row[6].strip(): int(row[6])  # startups
+                            if row[7].strip(): float(row[7])  # voltage
+                            if row[8].strip(): float(row[8])  # depth
+                            if row[9].strip(): float(row[9])  # cpu_temp
+                            if row[10].strip(): float(row[10])  # wh_consumed
+                            if len(row) > 11 and row[11].strip(): float(row[11])  # current_ah
+                        else:
+                            # Old format without dive_minutes
+                            if row[4].strip(): int(row[4])  # battery_swaps
+                            if row[5].strip(): int(row[5])  # startups
+                            if row[6].strip(): float(row[6])  # voltage
+                            if row[7].strip(): float(row[7])  # cpu_temp
+                            if row[8].strip(): float(row[8])  # wh_consumed
+                            if len(row) > 9 and row[9].strip(): float(row[9])  # current_ah
                     except (ValueError, TypeError):
                         continue
                     
@@ -288,7 +327,7 @@ class OdometerService:
             
             with open(ODOMETER_CSV, 'r', newline='') as f:
                 reader = csv.reader(f)
-                headers = next(reader)  # Skip header row
+                headers = next(reader)  # Get header row to determine format
                 last_row = None
                 for row in reader:
                     # Skip empty rows or rows with all empty values
@@ -298,47 +337,72 @@ class OdometerService:
                 
                 if last_row:
                     with self.stats_lock:
-                        # Basic stats that have always existed
-                        self.stats['total_minutes'] = int(last_row[1]) if last_row[1].strip() else 0
-                        self.stats['armed_minutes'] = int(last_row[2]) if last_row[2].strip() else 0
-                        self.stats['disarmed_minutes'] = int(last_row[3]) if last_row[3].strip() else 0
-                        self.stats['battery_swaps'] = int(last_row[4]) if last_row[4].strip() else 0
+                        # Determine if this is new format (with dive_minutes) or old format
+                        has_dive_minutes = 'dive_minutes' in headers
                         
-                        # Handle loading "startups" field if it exists in the CSV
-                        if len(last_row) > 5 and last_row[5].strip():
-                            self.stats['startups'] = int(last_row[5])
-                        else:
-                            self.stats['startups'] = 0
-                        
-                        # Voltage is at index 6 if startups field exists
-                        if len(last_row) > 6:
-                            self.stats['last_voltage'] = float(last_row[6]) if last_row[6].strip() else 0.0
-                        else:
-                            self.stats['last_voltage'] = float(last_row[5]) if last_row[5].strip() else 0.0
-                        
-                        # CPU temperature might be at index 7 if the field exists
-                        if len(last_row) > 7 and last_row[7].strip():
-                            try:
-                                self.stats['cpu_temp'] = float(last_row[7])
-                            except (ValueError, TypeError):
-                                self.stats['cpu_temp'] = 0.0
-                        else:
-                            self.stats['cpu_temp'] = 0.0
-                        
-                        # Load accumulated watt-hours from previous batteries (index 8)
-                        # Note: CSV stores previous_batteries_wh, and total_wh_consumed is calculated
-                        # as previous_batteries_wh + current_battery_wh on each update
-                        if len(last_row) > 8 and last_row[8].strip():
-                            try:
-                                self.stats['previous_batteries_wh'] = float(last_row[8])
-                                # Initialize total to previous batteries until we get MAVLink data
-                                self.stats['total_wh_consumed'] = self.stats['previous_batteries_wh']
-                            except (ValueError, TypeError):
+                        if has_dive_minutes:
+                            # New format: timestamp, total_minutes, armed_minutes, disarmed_minutes,
+                            # dive_minutes, battery_swaps, startups, voltage, depth, cpu_temp, wh_consumed, current_ah, time_status
+                            self.stats['total_minutes'] = int(last_row[1]) if len(last_row) > 1 and last_row[1].strip() else 0
+                            self.stats['armed_minutes'] = int(last_row[2]) if len(last_row) > 2 and last_row[2].strip() else 0
+                            self.stats['disarmed_minutes'] = int(last_row[3]) if len(last_row) > 3 and last_row[3].strip() else 0
+                            self.stats['dive_minutes'] = int(last_row[4]) if len(last_row) > 4 and last_row[4].strip() else 0
+                            self.stats['battery_swaps'] = int(last_row[5]) if len(last_row) > 5 and last_row[5].strip() else 0
+                            self.stats['startups'] = int(last_row[6]) if len(last_row) > 6 and last_row[6].strip() else 0
+                            self.stats['last_voltage'] = float(last_row[7]) if len(last_row) > 7 and last_row[7].strip() else 0.0
+                            self.stats['last_depth'] = float(last_row[8]) if len(last_row) > 8 and last_row[8].strip() else 0.0
+                            self.stats['cpu_temp'] = float(last_row[9]) if len(last_row) > 9 and last_row[9].strip() else 0.0
+                            
+                            # Load accumulated watt-hours from previous batteries (index 10)
+                            if len(last_row) > 10 and last_row[10].strip():
+                                try:
+                                    self.stats['previous_batteries_wh'] = float(last_row[10])
+                                    self.stats['total_wh_consumed'] = self.stats['previous_batteries_wh']
+                                except (ValueError, TypeError):
+                                    self.stats['previous_batteries_wh'] = 0.0
+                                    self.stats['total_wh_consumed'] = 0.0
+                            else:
                                 self.stats['previous_batteries_wh'] = 0.0
                                 self.stats['total_wh_consumed'] = 0.0
                         else:
-                            self.stats['previous_batteries_wh'] = 0.0
-                            self.stats['total_wh_consumed'] = 0.0
+                            # Old format without dive_minutes - indices are different
+                            self.stats['total_minutes'] = int(last_row[1]) if last_row[1].strip() else 0
+                            self.stats['armed_minutes'] = int(last_row[2]) if last_row[2].strip() else 0
+                            self.stats['disarmed_minutes'] = int(last_row[3]) if last_row[3].strip() else 0
+                            self.stats['dive_minutes'] = 0  # Not tracked in old format
+                            self.stats['battery_swaps'] = int(last_row[4]) if len(last_row) > 4 and last_row[4].strip() else 0
+                            
+                            if len(last_row) > 5 and last_row[5].strip():
+                                self.stats['startups'] = int(last_row[5])
+                            else:
+                                self.stats['startups'] = 0
+                            
+                            if len(last_row) > 6:
+                                self.stats['last_voltage'] = float(last_row[6]) if last_row[6].strip() else 0.0
+                            else:
+                                self.stats['last_voltage'] = 0.0
+                            
+                            self.stats['last_depth'] = 0.0  # Not tracked in old format
+                            
+                            if len(last_row) > 7 and last_row[7].strip():
+                                try:
+                                    self.stats['cpu_temp'] = float(last_row[7])
+                                except (ValueError, TypeError):
+                                    self.stats['cpu_temp'] = 0.0
+                            else:
+                                self.stats['cpu_temp'] = 0.0
+                            
+                            # Load accumulated watt-hours (index 8 in old format)
+                            if len(last_row) > 8 and last_row[8].strip():
+                                try:
+                                    self.stats['previous_batteries_wh'] = float(last_row[8])
+                                    self.stats['total_wh_consumed'] = self.stats['previous_batteries_wh']
+                                except (ValueError, TypeError):
+                                    self.stats['previous_batteries_wh'] = 0.0
+                                    self.stats['total_wh_consumed'] = 0.0
+                            else:
+                                self.stats['previous_batteries_wh'] = 0.0
+                                self.stats['total_wh_consumed'] = 0.0
     
     def update_loop(self):
         """Main update loop that runs every minute"""
@@ -370,8 +434,8 @@ class OdometerService:
                 minutes_to_add = time_diff_seconds / 60
                 time_status = "normal"
             
-            # Get current voltage, armed status, and current consumed
-            current_voltage, is_armed, current_consumed = self.get_vehicle_status()
+            # Get current voltage, armed status, current consumed, and depth
+            current_voltage, is_armed, current_consumed, current_depth = self.get_vehicle_status()
             
             # Get current CPU temperature
             current_cpu_temp = self.get_cpu_temperature()
@@ -385,6 +449,14 @@ class OdometerService:
                     self.stats['armed_minutes'] += 1
                 else:
                     self.stats['disarmed_minutes'] += 1
+                
+                # Update dive minutes if depth exceeds threshold
+                if current_depth >= DIVE_DEPTH_THRESHOLD:
+                    self.stats['dive_minutes'] += 1
+                    logger.info(f"Dive time incremented: depth={current_depth}m >= {DIVE_DEPTH_THRESHOLD}m threshold")
+                
+                # Store current depth
+                self.stats['last_depth'] = current_depth
                 
                 # Update voltage tracking for averaging
                 if current_voltage > 0:
@@ -527,19 +599,21 @@ class OdometerService:
         local_time = self.get_local_time()
         
         # Create row with all fields, converting all values to strings
-        # Note: wh_consumed column stores previous_batteries_wh (the base for lifetime total)
-        # total_wh_consumed = previous_batteries_wh + current_battery_wh (calculated live)
+        # Format: timestamp, total_minutes, armed_minutes, disarmed_minutes, dive_minutes,
+        # battery_swaps, startups, voltage, depth, cpu_temp, wh_consumed, current_ah, time_status
         row = [
             local_time.isoformat(),
             str(self.stats['total_minutes']),
             str(self.stats['armed_minutes']),
             str(self.stats['disarmed_minutes']),
+            str(self.stats['dive_minutes']),
             str(self.stats['battery_swaps']),
             str(self.stats['startups']),
             str(self.stats['last_voltage']),
+            str(self.stats['last_depth']),
             cpu_temp_value,
             str(self.stats['previous_batteries_wh']),
-            str(self.stats['current_mission']['total_ah']),  # Add current mission's amp-hours
+            str(self.stats['current_mission']['total_ah']),
             time_status + (" (startup)" if startup_detected else "")
         ]
         
@@ -547,11 +621,12 @@ class OdometerService:
             writer = csv.writer(f)
             writer.writerow(row)
     
-    def get_vehicle_status(self) -> Tuple[float, bool, float]:
-        """Get the vehicle's current voltage, armed status, and current consumed from Mavlink2Rest"""
+    def get_vehicle_status(self) -> Tuple[float, bool, float, float]:
+        """Get the vehicle's current voltage, armed status, current consumed, and depth from Mavlink2Rest"""
         voltage = 0.0
         is_armed = False
         current_consumed = 0.0
+        depth = 0.0
         
         # Try each endpoint until we get a successful response
         for endpoint in MAVLINK_ENDPOINTS:
@@ -602,9 +677,29 @@ class OdometerService:
                             base_mode = base_mode_obj  # Fallback for older API versions
                             
                         is_armed = bool(base_mode & ARMED_FLAG)  # Check if the ARMED flag is set
+                    
+                    # Get depth from VFR_HUD message (alt field)
+                    # For underwater vehicles, alt is negative when submerged
+                    vfr_hud_url = f"{endpoint}/VFR_HUD"
+                    vfr_hud_response = requests.get(vfr_hud_url, timeout=2)
+                    
+                    if vfr_hud_response.status_code == 200:
+                        vfr_hud_data = vfr_hud_response.json()
                         
-                        logger.info(f"Successfully got vehicle status from {endpoint}: voltage={voltage}V, armed={is_armed}, current_consumed={current_consumed}mAh")
-                        return voltage, is_armed, current_consumed
+                        # Try to handle different response formats
+                        if 'message' in vfr_hud_data:
+                            vfr_hud = vfr_hud_data.get("message", {})
+                        else:
+                            vfr_hud = vfr_hud_data
+                        
+                        # Get altitude - negative values indicate depth underwater
+                        alt = float(vfr_hud.get("alt", 0.0))
+                        # Convert to positive depth (negative altitude = positive depth)
+                        depth = -alt if alt < 0 else 0.0
+                        logger.info(f"VFR_HUD alt: {alt}m, depth: {depth}m")
+                    
+                    logger.info(f"Successfully got vehicle status from {endpoint}: voltage={voltage}V, armed={is_armed}, current_consumed={current_consumed}mAh, depth={depth}m")
+                    return voltage, is_armed, current_consumed, depth
             
             except requests.exceptions.RequestException as e:
                 logger.warning(f"Failed to connect to mavlink endpoint {endpoint}: {e}")
@@ -614,13 +709,14 @@ class OdometerService:
                 continue
         
         logger.error(f"Could not get vehicle status from any mavlink endpoint")
-        return voltage, is_armed, current_consumed
+        return voltage, is_armed, current_consumed, depth
     
     def send_stats_to_mavlink(self):
         """Send odometer stats to Mavlink as named float values"""
         stats_to_send = {
             "ODO_UPTM": self.stats['total_minutes'],
-            "ODO_WH": self.stats['total_wh_consumed']  # Add watt-hours consumed
+            "ODO_WH": self.stats['total_wh_consumed'],
+            "ODO_DIVE": self.stats['dive_minutes']  # Dive time in minutes
         }
         
         for name, value in stats_to_send.items():
@@ -896,14 +992,24 @@ def clear_history():
             headers = next(reader)  # Get the header row
             rows.append(headers)  # Keep the header row
             
+            # Determine format based on headers
+            has_dive_minutes = 'dive_minutes' in headers
+            
             # Process each data row
             for row in reader:
-                if len(row) >= 8:  # Ensure the row has enough columns
-                    # Zero out voltage and CPU temp values but keep all timing data
-                    row[6] = "0.0"  # voltage
-                    if len(row) > 7:
+                if has_dive_minutes:
+                    # New format: voltage at index 7, depth at 8, cpu_temp at 9
+                    if len(row) >= 10:
+                        row[7] = "0.0"  # voltage
+                        row[8] = "0.0"  # depth
+                        row[9] = ""  # cpu_temp
+                        rows.append(row)
+                else:
+                    # Old format: voltage at index 6, cpu_temp at 7
+                    if len(row) >= 8:
+                        row[6] = "0.0"  # voltage
                         row[7] = ""  # cpu_temp
-                    rows.append(row)
+                        rows.append(row)
         
         # Write back the modified data
         with open(ODOMETER_CSV, 'w', newline='') as f:
@@ -913,8 +1019,9 @@ def clear_history():
         # Also update the current stats
         with odometer_service.stats_lock:
             odometer_service.stats['last_voltage'] = 0.0
+            odometer_service.stats['last_depth'] = 0.0
         
-        return jsonify({"status": "success", "message": "Temperature and voltage history cleared successfully"})
+        return jsonify({"status": "success", "message": "Temperature, voltage, and depth history cleared successfully"})
     
     except Exception as e:
         logger.error(f"Error clearing history: {e}")
