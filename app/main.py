@@ -58,7 +58,7 @@ app = Flask(__name__, static_folder='static')
 REGISTER_SERVICE = {
     "name": "Odometer",
     "description": "Track vehicle usage statistics, armed time, battery swaps, and maintenance history with beautiful visualizations",
-    "icon": "mdi-altimeter",
+    "icon": "mdi-counter",
     "company": "Blue Robotics",
     "version": "0.1.0",
     "webpage": "https://github.com/vshie/Odometer",
