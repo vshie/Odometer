@@ -13,6 +13,8 @@ import requests
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from flask import Flask, jsonify, request, send_from_directory, send_file
+
+from pdf_report import generate_report
 import websockets
 from websockets.exceptions import ConnectionClosed
 
@@ -37,7 +39,15 @@ MAINTENANCE_CSV = DATA_DIR / 'maintenance.csv'
 MISSIONS_CSV = DATA_DIR / 'missions.csv'
 CURRENT_SESSION_FILE = DATA_DIR / 'current_session.json'
 STARTUP_MARKER = DATA_DIR / '.startup_marker'
+THRUSTERS_FILE = DATA_DIR / 'thrusters.json'
+ACCESSORIES_FILE = DATA_DIR / 'accessories.json'
+VEHICLE_FILE = DATA_DIR / 'vehicle.json'
 CPU_TEMP_PATH = Path('/sys/class/thermal/thermal_zone0/temp')
+
+# MAV_TYPE enum values for vehicle detection
+MAV_TYPE_SUBMARINE = 12      # ArduSub: 4-8 thrusters
+MAV_TYPE_GROUND_ROVER = 10   # ArduRover: 2 thrusters (BlueBoat)
+MAV_TYPE_SURFACE_BOAT = 16   # Surface boat: 2 thrusters
 
 # Define potential Mavlink endpoints to try
 MAVLINK_ENDPOINTS = [
@@ -49,6 +59,7 @@ MAVLINK_ENDPOINTS = [
 ]
 
 UPDATE_INTERVAL = 60  # Update every 60 seconds (1 minute)
+PWM_SAMPLE_INTERVAL = 5  # Sample PWM values every 5 seconds when armed
 ARMED_FLAG = 128  # MAV_MODE_FLAG_SAFETY_ARMED (0b10000000)
 MAX_TIME_JUMP_MINUTES = 5  # Maximum acceptable time jump in minutes
 PORT = 80  # Port to run the server on
@@ -135,16 +146,29 @@ class OdometerService:
                 'end_cpu_temp': 0.0,
                 'total_ah': 0.0,
                 'start_uptime': 0,
-                'end_uptime': 0
+                'end_uptime': 0,
+                'voltage_min': 0.0,
+                'max_pwm_deviation': 0.0
             },
             'pending_battery_swap_check': False  # Set on startup when previous session had voltage drop
         }
         self.missions = []  # List to store completed missions
+        self.thruster_stats = {
+            'thruster_count': 0,
+            'mav_type': -1,
+            'thrusters': []  # [{'run_minutes': 0, 'avg_pwm_sum': 0, 'avg_pwm_count': 0}, ...]
+        }
+        self.thruster_lock = threading.Lock()
+        self.accessories = {}  # {id: {'name': str, 'channel': int, 'run_minutes': int, 'avg_pwm_sum': float, 'avg_pwm_count': int}}
+        self.accessory_lock = threading.Lock()
+        self._next_accessory_id = 1
         self.last_update_time = time.time()
         self.minutes_since_update = 0
         self.setup_csv_files()
         self.load_stats()
         self.load_missions()
+        self.load_thruster_stats()
+        self.load_accessories()
         self.close_previous_session_on_startup()
         self.detect_startup()
         
@@ -152,6 +176,11 @@ class OdometerService:
         self.update_thread = threading.Thread(target=self.update_loop)
         self.update_thread.daemon = True
         self.update_thread.start()
+        
+        # Start PWM sampling thread (runs every 5 seconds when armed)
+        self.pwm_sample_thread = threading.Thread(target=self.pwm_sample_loop)
+        self.pwm_sample_thread.daemon = True
+        self.pwm_sample_thread.start()
     
     def detect_startup(self):
         """
@@ -236,6 +265,32 @@ class OdometerService:
         except Exception as e:
             logger.error(f"Error upgrading CSV format: {e}")
     
+    def upgrade_maintenance_csv_format(self):
+        """Upgrade maintenance CSV to add thruster_ids, reset_run_hours, device_id, device_name, device_channel if missing"""
+        try:
+            if not MAINTENANCE_CSV.exists():
+                return
+            with open(MAINTENANCE_CSV, 'r', newline='') as f:
+                reader = csv.reader(f)
+                headers = next(reader, [])
+                if 'thruster_ids' in headers and 'reset_run_hours' in headers and 'device_id' in headers:
+                    return
+                rows = list(reader)
+            new_headers = ['timestamp', 'event_type', 'details', 'thruster_ids', 'reset_run_hours',
+                          'device_id', 'device_name', 'device_channel', 'reset_accessory']
+            with open(MAINTENANCE_CSV, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(new_headers)
+                for row in rows:
+                    if len(row) >= 3:
+                        thruster_ids = row[3] if len(row) > 3 else ''
+                        reset_run_hours = row[4] if len(row) > 4 else ''
+                        new_row = [row[0], row[1], row[2], thruster_ids, reset_run_hours, '', '', '', '']
+                        writer.writerow(new_row)
+            logger.info("Upgraded maintenance CSV to new format with thruster and accessory support")
+        except Exception as e:
+            logger.error(f"Error upgrading maintenance CSV format: {e}")
+    
     def setup_csv_files(self):
         # Set up odometer CSV file
         if not ODOMETER_CSV.exists():
@@ -252,14 +307,18 @@ class OdometerService:
         if not MAINTENANCE_CSV.exists():
             with open(MAINTENANCE_CSV, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(['timestamp', 'event_type', 'details'])
+                writer.writerow(['timestamp', 'event_type', 'details', 'thruster_ids', 'reset_run_hours',
+                               'device_id', 'device_name', 'device_channel', 'reset_accessory'])
+        else:
+            self.upgrade_maintenance_csv_format()
         
         # Set up missions CSV file for persistent usage history
         if not MISSIONS_CSV.exists():
             with open(MISSIONS_CSV, 'w', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow(['start_time', 'end_time', 'start_voltage', 'end_voltage',
-                               'start_cpu_temp', 'end_cpu_temp', 'total_ah', 'start_uptime', 'end_uptime'])
+                               'start_cpu_temp', 'end_cpu_temp', 'total_ah', 'start_uptime', 'end_uptime',
+                               'voltage_min', 'max_pwm_deviation', 'hard_use'])
     
     def load_missions(self):
         """Load completed missions from persistent storage"""
@@ -271,7 +330,7 @@ class OdometerService:
                     if headers:
                         for row in reader:
                             if len(row) >= 9:
-                                self.missions.append({
+                                m = {
                                     'start_time': row[0],
                                     'end_time': row[1],
                                     'start_voltage': float(row[2]) if row[2].strip() else 0.0,
@@ -281,14 +340,232 @@ class OdometerService:
                                     'total_ah': float(row[6]) if row[6].strip() else 0.0,
                                     'start_uptime': int(row[7]) if row[7].strip() else 0,
                                     'end_uptime': int(row[8]) if row[8].strip() else 0
-                                })
+                                }
+                                if len(row) >= 12:
+                                    m['voltage_min'] = float(row[9]) if row[9].strip() else 0.0
+                                    m['max_pwm_deviation'] = float(row[10]) if row[10].strip() else 0.0
+                                    m['hard_use'] = (row[11].strip().lower() in ('true', '1', 'yes')) if len(row) > 11 else False
+                                self.missions.append(m)
                 logger.info(f"Loaded {len(self.missions)} missions from {MISSIONS_CSV}")
             except Exception as e:
                 logger.error(f"Error loading missions: {e}")
     
+    def load_thruster_stats(self):
+        """Load thruster stats from JSON file"""
+        if THRUSTERS_FILE.exists():
+            try:
+                with open(THRUSTERS_FILE, 'r') as f:
+                    data = json.load(f)
+                with self.thruster_lock:
+                    self.thruster_stats['thruster_count'] = data.get('thruster_count', 0)
+                    self.thruster_stats['mav_type'] = data.get('mav_type', -1)
+                    self.thruster_stats['thrusters'] = data.get('thrusters', [])
+                logger.info(f"Loaded thruster stats: {self.thruster_stats['thruster_count']} thrusters")
+            except Exception as e:
+                logger.error(f"Error loading thruster stats: {e}")
+    
+    def save_thruster_stats(self):
+        """Save thruster stats to JSON file"""
+        try:
+            with self.thruster_lock:
+                data = {
+                    'thruster_count': self.thruster_stats['thruster_count'],
+                    'mav_type': self.thruster_stats['mav_type'],
+                    'thrusters': self.thruster_stats['thrusters']
+                }
+            with open(THRUSTERS_FILE, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logger.error(f"Error saving thruster stats: {e}")
+    
+    def load_vehicle(self) -> dict:
+        """Load vehicle name from JSON file"""
+        if VEHICLE_FILE.exists():
+            try:
+                with open(VEHICLE_FILE, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Error loading vehicle: {e}")
+        return {'name': ''}
+    
+    def save_vehicle(self, data: dict) -> None:
+        """Save vehicle name to JSON file"""
+        try:
+            with open(VEHICLE_FILE, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logger.error(f"Error saving vehicle: {e}")
+    
+    def load_accessories(self) -> None:
+        """Load accessories from JSON file"""
+        if ACCESSORIES_FILE.exists():
+            try:
+                with open(ACCESSORIES_FILE, 'r') as f:
+                    data = json.load(f)
+                raw = data.get('accessories', {})
+                with self.accessory_lock:
+                    self.accessories = {}
+                    for k, v in raw.items():
+                        kid = str(k)
+                        self.accessories[kid] = {
+                            'name': v.get('name', ''),
+                            'channel': int(v.get('channel', 1)),
+                            'run_minutes': int(v.get('run_minutes', 0)),
+                            'avg_pwm_sum': float(v.get('avg_pwm_sum', 0)),
+                            'avg_pwm_count': int(v.get('avg_pwm_count', 0))
+                        }
+                    self._next_accessory_id = max(
+                        (int(k) for k in self.accessories if str(k).isdigit()), default=0
+                    ) + 1
+                logger.info(f"Loaded {len(self.accessories)} accessories")
+            except Exception as e:
+                logger.error(f"Error loading accessories: {e}")
+    
+    def save_accessories(self) -> None:
+        """Save accessories to JSON file"""
+        try:
+            with self.accessory_lock:
+                data = {'accessories': self.accessories}
+            with open(ACCESSORIES_FILE, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logger.error(f"Error saving accessories: {e}")
+    
+    def get_thruster_count_from_mav_type(self, mav_type: int) -> int:
+        """Map MAV_TYPE to thruster count. ArduSub: 4-8 (default 8), Boat/Rover: 2"""
+        if mav_type == MAV_TYPE_SUBMARINE:
+            return 8  # ArduSub: default to 8, covers most frames
+        if mav_type in (MAV_TYPE_GROUND_ROVER, MAV_TYPE_SURFACE_BOAT):
+            return 2  # BlueBoat/ArduRover
+        return 0
+    
+    def get_layout_config(self, mav_type: int, thruster_count: int) -> Dict[str, Any]:
+        """
+        Return layout config for position grids. ROVs: vertical + horizontal tables.
+        Boats: 2x1 (port, starboard). Layout is list of grids; each grid is list of rows.
+        """
+        is_rov = mav_type == MAV_TYPE_SUBMARINE
+        is_boat = mav_type in (MAV_TYPE_GROUND_ROVER, MAV_TYPE_SURFACE_BOAT)
+        
+        if is_boat and thruster_count == 2:
+            return {
+                'unit': 'motor',
+                'unit_plural': 'motors',
+                'grids': [
+                    {'label': 'Port / Starboard', 'rows': [[1, 2]]}  # 2x1
+                ]
+            }
+        if is_rov:
+            if thruster_count == 4:
+                return {
+                    'unit': 'thruster',
+                    'unit_plural': 'thrusters',
+                    'grids': [
+                        {'label': 'Horizontal', 'rows': [[1, 2], [3, 4]]}  # 2x2
+                    ]
+                }
+            if thruster_count == 5:
+                return {
+                    'unit': 'thruster',
+                    'unit_plural': 'thrusters',
+                    'grids': [
+                        {'label': 'Horizontal', 'rows': [[1, 2], [3, 4]]},
+                        {'label': 'Vertical', 'rows': [[5]]}
+                    ]
+                }
+            if thruster_count == 6:
+                return {
+                    'unit': 'thruster',
+                    'unit_plural': 'thrusters',
+                    'grids': [
+                        {'label': 'Horizontal', 'rows': [[1, 2], [3, 4]]},  # 2x2
+                        {'label': 'Vertical', 'rows': [[5, 6]]}  # 2x1
+                    ]
+                }
+            if thruster_count == 8:
+                return {
+                    'unit': 'thruster',
+                    'unit_plural': 'thrusters',
+                    'grids': [
+                        {'label': 'Vertical', 'rows': [[1, 2], [3, 4]]},  # 2x2
+                        {'label': 'Horizontal', 'rows': [[5, 6], [7, 8]]}  # 2x2
+                    ]
+                }
+            # Default for 3 or other ROV counts
+            return {
+                'unit': 'thruster',
+                'unit_plural': 'thrusters',
+                'grids': [
+                    {'label': 'Thrusters', 'rows': [list(range(1, thruster_count + 1))]}
+                ]
+            }
+        return {
+            'unit': 'thruster',
+            'unit_plural': 'thrusters',
+            'grids': [{'label': 'Channels', 'rows': [list(range(1, thruster_count + 1))]}]
+        }
+    
+    def add_accessory(self, name: str, channel: int) -> str:
+        """Add a new accessory. Returns the new accessory ID."""
+        channel = max(1, min(16, int(channel)))
+        with self.accessory_lock:
+            aid = str(self._next_accessory_id)
+            self._next_accessory_id += 1
+            self.accessories[aid] = {
+                'name': str(name).strip() or f'Device {aid}',
+                'channel': channel,
+                'run_minutes': 0,
+                'avg_pwm_sum': 0.0,
+                'avg_pwm_count': 0
+            }
+            self.save_accessories()
+        return aid
+    
+    def rename_accessory(self, accessory_id: str, new_name: str) -> bool:
+        """Rename an accessory. Returns True if found."""
+        with self.accessory_lock:
+            if accessory_id in self.accessories:
+                self.accessories[accessory_id]['name'] = str(new_name).strip() or self.accessories[accessory_id]['name']
+                self.save_accessories()
+                return True
+        return False
+    
+    def reset_accessory_run_hours(self, accessory_id: str) -> None:
+        """Reset run minutes and PWM average for an accessory"""
+        with self.accessory_lock:
+            if accessory_id in self.accessories:
+                self.accessories[accessory_id]['run_minutes'] = 0
+                self.accessories[accessory_id]['avg_pwm_sum'] = 0.0
+                self.accessories[accessory_id]['avg_pwm_count'] = 0
+                self.save_accessories()
+    
+    def reset_thruster_run_hours(self, thruster_ids: List[int]) -> None:
+        """Reset run minutes and PWM averages for specified thrusters (1-indexed)"""
+        with self.thruster_lock:
+            for tid in thruster_ids:
+                idx = tid - 1  # Convert to 0-indexed
+                if 0 <= idx < len(self.thruster_stats['thrusters']):
+                    self.thruster_stats['thrusters'][idx]['run_minutes'] = 0
+                    self.thruster_stats['thrusters'][idx]['avg_pwm_sum'] = 0
+                    self.thruster_stats['thrusters'][idx]['avg_pwm_count'] = 0
+            self.save_thruster_stats()
+    
+    def _is_hard_use(self, mission: dict) -> bool:
+        """Hard use: rapid discharge (voltage drop) or high duty (|avg_pwm - 1500| > 300)"""
+        start_v = mission.get('start_voltage', 0) or 0
+        end_v = mission.get('end_voltage', 0) or 0
+        voltage_drop = start_v - end_v if (start_v > 0 and end_v > 0) else 0
+        rapid_discharge = voltage_drop > 2.0  # >2V drop in session
+        max_dev = mission.get('max_pwm_deviation', 0) or 0
+        high_duty = max_dev > 300
+        return rapid_discharge or high_duty
+    
     def save_mission(self, mission: dict):
         """Append a single mission to persistent storage"""
         try:
+            hard_use = self._is_hard_use(mission)
+            voltage_min = mission.get('voltage_min', 0) or 0
+            max_pwm = mission.get('max_pwm_deviation', 0) or 0
             with open(MISSIONS_CSV, 'a', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow([
@@ -300,7 +577,10 @@ class OdometerService:
                     str(mission.get('end_cpu_temp', 0)),
                     str(mission.get('total_ah', 0)),
                     str(mission.get('start_uptime', 0)),
-                    str(mission.get('end_uptime', 0))
+                    str(mission.get('end_uptime', 0)),
+                    str(voltage_min),
+                    str(max_pwm),
+                    'true' if hard_use else 'false'
                 ])
         except Exception as e:
             logger.error(f"Error saving mission: {e}")
@@ -373,7 +653,9 @@ class OdometerService:
                 'end_cpu_temp': end_cpu_temp,
                 'total_ah': float(prev_session.get('total_ah', 0)),
                 'start_uptime': prev_session.get('start_uptime', 0),
-                'end_uptime': end_uptime
+                'end_uptime': end_uptime,
+                'voltage_min': float(prev_session.get('voltage_min', 0) or 0),
+                'max_pwm_deviation': float(prev_session.get('max_pwm_deviation', 0) or 0)
             }
             
             self.missions.append(mission)
@@ -561,6 +843,56 @@ class OdometerService:
                 logger.error(f"Error in update loop: {e}")
                 time.sleep(10)  # Sleep for a shorter time if there was an error
     
+    def pwm_sample_loop(self):
+        """Sample PWM values every 5 seconds when armed for duty-cycle averaging (thrusters + accessories)"""
+        while not self.stop_event.is_set():
+            try:
+                time.sleep(PWM_SAMPLE_INTERVAL)
+                if not self.get_armed_status():
+                    continue
+                servo_values = self.get_servo_output_raw()
+                thruster_stats_changed = False
+                with self.thruster_lock:
+                    thruster_count = self.thruster_stats['thruster_count']
+                    if thruster_count > 0:
+                        for i in range(min(thruster_count, len(servo_values))):
+                            pwm = servo_values[i]
+                            if pwm > 0:
+                                t = self.thruster_stats['thrusters'][i]
+                                t['avg_pwm_sum'] = t.get('avg_pwm_sum', 0) + pwm
+                                t['avg_pwm_count'] = t.get('avg_pwm_count', 0) + 1
+                                thruster_stats_changed = True
+                if thruster_stats_changed:
+                    self.save_thruster_stats()
+                # Sample accessory channels (avg PWM only; run_minutes updated per minute in update_stats)
+                accessory_changed = False
+                with self.accessory_lock:
+                    for aid, acc in self.accessories.items():
+                        ch = acc.get('channel', 1)
+                        idx = max(0, min(ch - 1, len(servo_values) - 1))
+                        pwm = servo_values[idx] if idx < len(servo_values) else 0
+                        if pwm > 0:
+                            acc['avg_pwm_sum'] = acc.get('avg_pwm_sum', 0) + pwm
+                            acc['avg_pwm_count'] = acc.get('avg_pwm_count', 0) + 1
+                            accessory_changed = True
+                if accessory_changed:
+                    self.save_accessories()
+                # Session PWM for hard-use: max deviation from 1500 (neutral)
+                max_dev = 0
+                for pwm in servo_values:
+                    if pwm > 0:
+                        dev = abs(pwm - 1500)
+                        if dev > max_dev:
+                            max_dev = dev
+                if max_dev > 0:
+                    with self.stats_lock:
+                        m = self.stats['current_mission']
+                        cur = m.get('max_pwm_deviation', 0)
+                        if max_dev > cur:
+                            m['max_pwm_deviation'] = max_dev
+            except Exception as e:
+                logger.debug(f"PWM sample loop: {e}")
+    
     def update_stats(self):
         """Update the statistics and write to CSV"""
         try:
@@ -580,11 +912,47 @@ class OdometerService:
                 minutes_to_add = time_diff_seconds / 60
                 time_status = "normal"
             
-            # Get current voltage, armed status, current consumed, and depth
-            current_voltage, is_armed, current_consumed, current_depth = self.get_vehicle_status()
+            # Get current voltage, armed status, current consumed, depth, and mav_type
+            current_voltage, is_armed, current_consumed, current_depth, mav_type = self.get_vehicle_status()
             
             # Get current CPU temperature
             current_cpu_temp = self.get_cpu_temperature()
+            
+            # Update thruster stats: detect vehicle type, ensure thruster array exists, update run minutes and PWM
+            thruster_count = self.get_thruster_count_from_mav_type(mav_type)
+            thruster_stats_changed = False
+            if thruster_count > 0:
+                with self.thruster_lock:
+                    if (self.thruster_stats['thruster_count'] != thruster_count or 
+                        len(self.thruster_stats['thrusters']) != thruster_count):
+                        self.thruster_stats['thruster_count'] = thruster_count
+                        self.thruster_stats['mav_type'] = mav_type
+                        # Preserve existing thruster data where indices overlap
+                        old_thrusters = {i: t for i, t in enumerate(self.thruster_stats['thrusters'])}
+                        self.thruster_stats['thrusters'] = [
+                            old_thrusters.get(i, {'run_minutes': 0, 'avg_pwm_sum': 0, 'avg_pwm_count': 0})
+                            for i in range(thruster_count)
+                        ]
+                        thruster_stats_changed = True
+                    
+                    if is_armed:
+                        for i in range(min(thruster_count, 8)):
+                            self.thruster_stats['thrusters'][i]['run_minutes'] = \
+                                self.thruster_stats['thrusters'][i].get('run_minutes', 0) + 1
+                        thruster_stats_changed = True
+                
+                if thruster_stats_changed:
+                    self.save_thruster_stats()
+            
+            # Accessory run minutes (1 per real minute when armed)
+            if is_armed:
+                with self.accessory_lock:
+                    acc_changed = False
+                    for acc in self.accessories.values():
+                        acc['run_minutes'] = acc.get('run_minutes', 0) + 1
+                        acc_changed = True
+                    if acc_changed:
+                        self.save_accessories()
             
             with self.stats_lock:
                 # Update total minutes
@@ -649,7 +1017,9 @@ class OdometerService:
                                 'end_cpu_temp': self.stats['cpu_temp'],
                                 'total_ah': self.stats['current_mission']['total_ah'],
                                 'start_uptime': self.stats['current_mission'].get('start_uptime', self.stats['total_minutes']),
-                                'end_uptime': self.stats['total_minutes']
+                                'end_uptime': self.stats['total_minutes'],
+                                'voltage_min': self.stats['current_mission'].get('voltage_min', 0) or 0,
+                                'max_pwm_deviation': self.stats['current_mission'].get('max_pwm_deviation', 0) or 0
                             }
                             self.missions.append(mission)
                             self.save_mission(mission)
@@ -664,7 +1034,9 @@ class OdometerService:
                             'end_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
                             'total_ah': 0.0,
                             'start_uptime': self.stats['total_minutes'],
-                            'end_uptime': self.stats['total_minutes']
+                            'end_uptime': self.stats['total_minutes'],
+                            'voltage_min': current_voltage,
+                            'max_pwm_deviation': 0.0
                         }
                         
                         # Battery swap detected
@@ -695,7 +1067,9 @@ class OdometerService:
                             'end_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
                             'total_ah': 0.0,
                             'start_uptime': self.stats['total_minutes'],
-                            'end_uptime': self.stats['total_minutes']
+                            'end_uptime': self.stats['total_minutes'],
+                            'voltage_min': current_voltage,
+                            'max_pwm_deviation': 0.0
                         }
                     
                     # Update mission end values
@@ -704,6 +1078,10 @@ class OdometerService:
                         self.stats['current_mission']['end_cpu_temp'] = current_cpu_temp
                     self.stats['current_mission']['total_ah'] = abs(current_consumed) / 1000.0  # Convert mAh to Ah
                     self.stats['current_mission']['end_uptime'] = self.stats['total_minutes']
+                    # Track session voltage min for hard-use detection
+                    vmin = self.stats['current_mission'].get('voltage_min', 0) or 0
+                    if vmin == 0 or current_voltage < vmin:
+                        self.stats['current_mission']['voltage_min'] = current_voltage
                     
                     # Log energy consumption
                     logger.info(f"Energy - Current battery: {self.stats['current_battery_wh']:.2f}Wh, Previous batteries: {self.stats['previous_batteries_wh']:.2f}Wh, Lifetime total: {self.stats['total_wh_consumed']:.2f}Wh")
@@ -722,7 +1100,9 @@ class OdometerService:
                             'end_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
                             'total_ah': 0.0,
                             'start_uptime': self.stats['total_minutes'],
-                            'end_uptime': self.stats['total_minutes']
+                            'end_uptime': self.stats['total_minutes'],
+                            'voltage_min': 0.0,
+                            'max_pwm_deviation': 0.0
                         }
                     else:
                         self.stats['current_mission']['end_cpu_temp'] = current_cpu_temp if current_cpu_temp > 0 else self.stats['current_mission']['end_cpu_temp']
@@ -795,12 +1175,79 @@ class OdometerService:
             writer = csv.writer(f)
             writer.writerow(row)
     
-    def get_vehicle_status(self) -> Tuple[float, bool, float, float]:
-        """Get the vehicle's current voltage, armed status, current consumed, and depth from Mavlink2Rest"""
+    def _parse_mav_type(self, heartbeat: dict) -> int:
+        """Extract MAV_TYPE from heartbeat. Returns -1 if unknown."""
+        mavtype_obj = heartbeat.get('mavtype', heartbeat.get('type'))
+        if mavtype_obj is None:
+            return -1
+        if isinstance(mavtype_obj, dict):
+            type_val = mavtype_obj.get('type', mavtype_obj.get('value', -1))
+        else:
+            type_val = mavtype_obj
+        if isinstance(type_val, int):
+            return type_val
+        if isinstance(type_val, str):
+            type_map = {
+                'MAV_TYPE_SUBMARINE': MAV_TYPE_SUBMARINE,
+                'MAV_TYPE_GROUND_ROVER': MAV_TYPE_GROUND_ROVER,
+                'MAV_TYPE_SURFACE_BOAT': MAV_TYPE_SURFACE_BOAT,
+            }
+            return type_map.get(type_val.upper(), -1)
+        return -1
+    
+    def get_armed_status(self) -> bool:
+        """Lightweight check: is vehicle armed? Fetches HEARTBEAT only."""
+        for endpoint in MAVLINK_ENDPOINTS:
+            try:
+                resp = requests.get(f"{endpoint}/HEARTBEAT", timeout=2)
+                if resp.status_code != 200:
+                    continue
+                data = resp.json()
+                heartbeat = data.get('message', data)
+                base_mode_obj = heartbeat.get("base_mode", {})
+                base_mode = base_mode_obj.get("bits", 0) if isinstance(base_mode_obj, dict) else base_mode_obj
+                return bool(base_mode & ARMED_FLAG)
+            except Exception:
+                continue
+        return False
+    
+    def get_servo_output_raw(self) -> List[int]:
+        """Get PWM values from SERVO_OUTPUT_RAW (servo1_raw..servo16_raw in us). 
+        Channels 1-8 from primary port; 9-16 from aux port if available."""
+        values = [0] * 16
+        for endpoint in MAVLINK_ENDPOINTS:
+            try:
+                # Primary port: servo1_raw..servo8_raw
+                url = f"{endpoint}/SERVO_OUTPUT_RAW"
+                resp = requests.get(url, timeout=2)
+                if resp.status_code != 200:
+                    continue
+                data = resp.json()
+                msg = data.get('message', data)
+                for i in range(1, 9):
+                    key = f'servo{i}_raw'
+                    val = msg.get(key, 0)
+                    values[i - 1] = int(val) if val is not None else 0
+                # Try aux port for channels 9-16 (SERVO_OUTPUT_RAW.port=1 typically)
+                # Some MAVLink2Rest implementations include servo9_raw..servo16_raw in same message
+                for i in range(9, 17):
+                    key = f'servo{i}_raw'
+                    val = msg.get(key, 0)
+                    if val is not None:
+                        values[i - 1] = int(val)
+                return values
+            except Exception as e:
+                logger.debug(f"SERVO_OUTPUT_RAW from {endpoint}: {e}")
+                continue
+        return values
+    
+    def get_vehicle_status(self) -> Tuple[float, bool, float, float, int]:
+        """Get the vehicle's current voltage, armed status, current consumed, depth, and mav_type from Mavlink2Rest"""
         voltage = 0.0
         is_armed = False
         current_consumed = 0.0
         depth = 0.0
+        mav_type = -1
         
         # Try each endpoint until we get a successful response
         for endpoint in MAVLINK_ENDPOINTS:
@@ -851,6 +1298,7 @@ class OdometerService:
                             base_mode = base_mode_obj  # Fallback for older API versions
                             
                         is_armed = bool(base_mode & ARMED_FLAG)  # Check if the ARMED flag is set
+                        mav_type = self._parse_mav_type(heartbeat)
                     
                     # Get depth from VFR_HUD message (alt field)
                     # For underwater vehicles, alt is negative when submerged
@@ -872,8 +1320,8 @@ class OdometerService:
                         depth = -alt if alt < 0 else 0.0
                         logger.info(f"VFR_HUD alt: {alt}m, depth: {depth}m")
                     
-                    logger.info(f"Successfully got vehicle status from {endpoint}: voltage={voltage}V, armed={is_armed}, current_consumed={current_consumed}mAh, depth={depth}m")
-                    return voltage, is_armed, current_consumed, depth
+                    logger.info(f"Successfully got vehicle status from {endpoint}: voltage={voltage}V, armed={is_armed}, current_consumed={current_consumed}mAh, depth={depth}m, mav_type={mav_type}")
+                    return voltage, is_armed, current_consumed, depth, mav_type
             
             except requests.exceptions.RequestException as e:
                 logger.warning(f"Failed to connect to mavlink endpoint {endpoint}: {e}")
@@ -883,7 +1331,7 @@ class OdometerService:
                 continue
         
         logger.error(f"Could not get vehicle status from any mavlink endpoint")
-        return voltage, is_armed, current_consumed, depth
+        return voltage, is_armed, current_consumed, depth, mav_type
     
     def send_stats_to_mavlink(self):
         """Send odometer stats to Mavlink as named float values"""
@@ -971,6 +1419,49 @@ odometer_service = OdometerService()
 websocket_thread = threading.Thread(target=start_websocket_server, daemon=True)
 websocket_thread.start()
 
+@app.route('/vehicle')
+def get_vehicle():
+    """Get vehicle name"""
+    data = odometer_service.load_vehicle()
+    return jsonify({"status": "success", "data": data})
+
+@app.route('/vehicle', methods=['POST'])
+def post_vehicle():
+    """Update vehicle name"""
+    data = request.json or {}
+    name = data.get('name', '').strip()
+    odometer_service.save_vehicle({'name': name})
+    return jsonify({"status": "success", "message": "Vehicle name updated"})
+
+@app.route('/accessories')
+def get_accessories():
+    """Get accessories list with run minutes and avg PWM"""
+    with odometer_service.accessory_lock:
+        acc_list = []
+        for aid, acc in odometer_service.accessories.items():
+            pwm_sum = acc.get('avg_pwm_sum', 0)
+            pwm_count = acc.get('avg_pwm_count', 0)
+            avg_pwm = round(pwm_sum / pwm_count, 1) if pwm_count > 0 else 0
+            acc_list.append({
+                'id': aid,
+                'name': acc.get('name', ''),
+                'channel': acc.get('channel', 1),
+                'run_minutes': acc.get('run_minutes', 0),
+                'avg_pwm_armed': avg_pwm
+            })
+        return jsonify({"status": "success", "data": acc_list})
+
+@app.route('/accessories/<accessory_id>/rename', methods=['POST'])
+def rename_accessory(accessory_id):
+    """Rename an accessory"""
+    data = request.json or {}
+    new_name = data.get('name', '').strip()
+    if not new_name:
+        return jsonify({"status": "error", "message": "Name is required"}), 400
+    if odometer_service.rename_accessory(accessory_id, new_name):
+        return jsonify({"status": "success", "message": "Accessory renamed"})
+    return jsonify({"status": "error", "message": "Accessory not found"}), 404
+
 @app.route('/stats')
 def get_stats():
     """Get the current odometer statistics"""
@@ -988,14 +1479,36 @@ def get_maintenance():
     if MAINTENANCE_CSV.exists():
         with open(MAINTENANCE_CSV, 'r', newline='') as f:
             reader = csv.reader(f)
-            headers = next(reader)  # Skip header row
+            headers = next(reader, [])
+            has_thruster_cols = 'thruster_ids' in headers
+            has_device_cols = 'device_id' in headers
             for row in reader:
                 if len(row) >= 3:
-                    maintenance_records.append({
+                    rec = {
                         "timestamp": row[0],
                         "event_type": row[1],
                         "details": row[2]
-                    })
+                    }
+                    if has_thruster_cols and len(row) >= 5:
+                        try:
+                            rec["thruster_ids"] = json.loads(row[3]) if row[3].strip() else []
+                        except (json.JSONDecodeError, TypeError):
+                            rec["thruster_ids"] = []
+                        rec["reset_run_hours"] = (row[4].strip().lower() in ('true', '1', 'yes')) if len(row) > 4 else False
+                    else:
+                        rec["thruster_ids"] = []
+                        rec["reset_run_hours"] = False
+                    if has_device_cols and len(row) >= 9:
+                        rec["device_id"] = row[5].strip() if len(row) > 5 else ''
+                        rec["device_name"] = row[6].strip() if len(row) > 6 else ''
+                        rec["device_channel"] = int(row[7]) if len(row) > 7 and row[7].strip() and str(row[7]).isdigit() else 0
+                        rec["reset_accessory"] = (row[8].strip().lower() in ('true', '1', 'yes')) if len(row) > 8 else False
+                    else:
+                        rec["device_id"] = ''
+                        rec["device_name"] = ''
+                        rec["device_channel"] = 0
+                        rec["reset_accessory"] = False
+                    maintenance_records.append(rec)
     
     return jsonify({
         "status": "success",
@@ -1005,24 +1518,60 @@ def get_maintenance():
 @app.route('/maintenance', methods=['POST'])
 def add_maintenance():
     """Add a new maintenance record"""
-    data = request.json
+    data = request.json or {}
     event_type = data.get('event_type', '').strip()
     details = data.get('details', '').strip()
+    thruster_ids = data.get('thruster_ids', [])
+    reset_run_hours = bool(data.get('reset_run_hours', False))
+    device_name = data.get('device_name', '').strip()
+    device_channel = data.get('device_channel', 1)
+    device_id = data.get('device_id', '').strip()
+    reset_accessory = bool(data.get('reset_accessory', False))
     
-    if not event_type or not details:
-        return jsonify({"status": "error", "message": "Event type and details are required"}), 400
+    if not event_type:
+        return jsonify({"status": "error", "message": "Event type is required"}), 400
+    
+    if event_type == 'Add Device':
+        if not device_name:
+            return jsonify({"status": "error", "message": "Device name is required for Add Device"}), 400
+        device_channel = max(1, min(16, int(device_channel) if device_channel else 1))
+        aid = odometer_service.add_accessory(device_name, device_channel)
+        details = f"Added {device_name} on channel {device_channel}"
+    elif not details:
+        return jsonify({"status": "error", "message": "Details are required"}), 400
+    
+    # Sanitize thruster_ids: ensure list of ints, 1-indexed
+    if not isinstance(thruster_ids, list):
+        thruster_ids = []
+    thruster_ids = [int(x) for x in thruster_ids if isinstance(x, (int, float, str)) and str(x).isdigit()]
     
     # Sanitize inputs to prevent CSV injection
-    # Remove leading characters that could be interpreted as formulas
     if details and details[0] in ('=', '+', '-', '@', '\t', '\r'):
         details = "'" + details
     
     # Get local time from system-information endpoint (use global odometer_service)
     timestamp = odometer_service.get_local_time().isoformat()
     
+    # If reset_run_hours requested, reset thruster run hours for selected thrusters
+    if reset_run_hours and thruster_ids:
+        odometer_service.reset_thruster_run_hours(thruster_ids)
+        logger.info(f"Reset run hours for thrusters {thruster_ids} via maintenance record")
+    
+    if reset_accessory and device_id:
+        odometer_service.reset_accessory_run_hours(device_id)
+        logger.info(f"Reset run hours for accessory {device_id} via maintenance record")
+    
+    thruster_ids_json = json.dumps(thruster_ids) if thruster_ids else ''
+    reset_run_hours_str = 'true' if reset_run_hours else 'false'
+    device_id_val = aid if event_type == 'Add Device' else device_id
+    device_name_val = device_name if event_type == 'Add Device' else ''
+    device_channel_val = str(device_channel) if event_type == 'Add Device' else ''
+    reset_accessory_str = 'true' if reset_accessory else 'false'
+    
     with open(MAINTENANCE_CSV, 'a', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow([timestamp, event_type, details])
+        writer.writerow([timestamp, event_type, details, thruster_ids_json, reset_run_hours_str,
+                        device_id_val, device_name_val, device_channel_val, reset_accessory_str])
     
     return jsonify({"status": "success", "message": "Maintenance record added"})
 
@@ -1132,6 +1681,77 @@ def download_maintenance():
         download_name='maintenance_data.csv'
     )
 
+@app.route('/export/pdf')
+def export_pdf():
+    """Generate and download PDF report"""
+    try:
+        vehicle = odometer_service.load_vehicle()
+        vehicle_name = vehicle.get('name', '')
+        with odometer_service.stats_lock:
+            stats = dict(odometer_service.stats)
+        maintenance_records = []
+        if MAINTENANCE_CSV.exists():
+            with open(MAINTENANCE_CSV, 'r', newline='') as f:
+                reader = csv.reader(f)
+                headers = next(reader, [])
+                for row in reader:
+                    if len(row) >= 3:
+                        rec = {"timestamp": row[0], "event_type": row[1], "details": row[2]}
+                        maintenance_records.append(rec)
+        with odometer_service.thruster_lock:
+            thruster_data = dict(odometer_service.thruster_stats)
+            layout = odometer_service.get_layout_config(
+                thruster_data.get('mav_type', -1),
+                thruster_data.get('thruster_count', 0)
+            )
+            thruster_data['layout'] = layout
+            thrusters = []
+            for i, t in enumerate(thruster_data.get('thrusters', [])):
+                pwm_sum = t.get('avg_pwm_sum', 0)
+                pwm_count = t.get('avg_pwm_count', 0)
+                avg_pwm = round(pwm_sum / pwm_count, 1) if pwm_count > 0 else 0
+                thrusters.append({
+                    'id': i + 1,
+                    'run_minutes': t.get('run_minutes', 0),
+                    'avg_pwm_armed': avg_pwm
+                })
+            thruster_data['thrusters'] = thrusters
+        with odometer_service.accessory_lock:
+            accessories = []
+            for aid, acc in odometer_service.accessories.items():
+                pwm_sum = acc.get('avg_pwm_sum', 0)
+                pwm_count = acc.get('avg_pwm_count', 0)
+                avg_pwm = round(pwm_sum / pwm_count, 1) if pwm_count > 0 else 0
+                accessories.append({
+                    'id': aid,
+                    'name': acc.get('name', ''),
+                    'channel': acc.get('channel', 1),
+                    'run_minutes': acc.get('run_minutes', 0),
+                    'avg_pwm_armed': avg_pwm
+                })
+        with odometer_service.stats_lock:
+            current_mission = dict(odometer_service.stats.get('current_mission', {}))
+        missions = list(odometer_service.missions)
+        pdf_bytes = generate_report(
+            vehicle_name=vehicle_name,
+            stats=stats,
+            maintenance=maintenance_records,
+            thrusters=thruster_data,
+            accessories=accessories,
+            missions=missions,
+            current_mission=current_mission,
+        )
+        from io import BytesIO
+        return send_file(
+            BytesIO(pdf_bytes),
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f'odometer_report_{odometer_service.get_local_time().strftime("%Y%m%d_%H%M")}.pdf'
+        )
+    except Exception as e:
+        logger.error(f"Error generating PDF: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route('/register_service')
 def register_service():
     """Register the extension as a service in BlueOS."""
@@ -1212,6 +1832,49 @@ def get_missions():
                 "completed_missions": odometer_service.missions
             }
         })
+
+
+@app.route('/thrusters')
+def get_thrusters():
+    """Get per-thruster run hours and average PWM stats"""
+    with odometer_service.thruster_lock:
+        stats = odometer_service.thruster_stats
+        thrusters = []
+        for i, t in enumerate(stats['thrusters']):
+            run_min = t.get('run_minutes', 0)
+            pwm_sum = t.get('avg_pwm_sum', 0)
+            pwm_count = t.get('avg_pwm_count', 0)
+            avg_pwm = round(pwm_sum / pwm_count, 1) if pwm_count > 0 else 0
+            thrusters.append({
+                'id': i + 1,
+                'run_minutes': run_min,
+                'avg_pwm_armed': avg_pwm
+            })
+        mav_type = stats['mav_type']
+        thruster_count = stats['thruster_count']
+        layout = odometer_service.get_layout_config(mav_type, thruster_count)
+        return jsonify({
+            "status": "success",
+            "data": {
+                "thruster_count": thruster_count,
+                "mav_type": mav_type,
+                "layout": layout,
+                "thrusters": thrusters
+            }
+        })
+
+
+@app.route('/thrusters/reset', methods=['POST'])
+def reset_thrusters():
+    """Reset run hours for specified thruster IDs (1-indexed)"""
+    data = request.json or {}
+    thruster_ids = data.get('thruster_ids', [])
+    if not thruster_ids:
+        return jsonify({"status": "error", "message": "thruster_ids is required"}), 400
+    thruster_ids = [int(x) for x in thruster_ids if isinstance(x, (int, float, str)) and str(x).isdigit()]
+    odometer_service.reset_thruster_run_hours(thruster_ids)
+    return jsonify({"status": "success", "message": f"Reset run hours for thrusters {thruster_ids}"})
+
 
 # If run directly, start the app
 if __name__ == "__main__":

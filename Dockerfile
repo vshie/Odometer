@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir \
     werkzeug==3.0.1 \
     requests==2.31.0 \
     websockets \
+    reportlab>=4.0.0 \
     --extra-index-url https://www.piwheels.org/simple
 
 EXPOSE 80/tcp

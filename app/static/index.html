@@ -88,6 +88,32 @@
         .usage-bar-label {
             text-shadow: 0 1px 2px rgba(0,0,0,0.3);
         }
+        /* Position grid for thrusters/motors */
+        .position-grid {
+            display: inline-block;
+            border: 1px solid rgba(128,128,128,0.4);
+            border-radius: 4px;
+            padding: 8px;
+            margin: 8px;
+        }
+        .position-grid-table {
+            border-collapse: collapse;
+        }
+        .position-grid-table td {
+            border: 1px solid rgba(128,128,128,0.4);
+            padding: 12px 16px;
+            text-align: center;
+            min-width: 60px;
+        }
+        .position-cell {
+            font-weight: bold;
+            font-size: 1.1rem;
+        }
+        .position-cell-sub {
+            font-size: 0.75rem;
+            opacity: 0.8;
+            margin-top: 2px;
+        }
     </style>
 </head>
 <body>
@@ -95,6 +121,21 @@
         <v-app :theme="isDarkMode ? 'dark' : 'light'">
             <v-main>
                 <v-container fluid class="pa-3">
+                    <!-- Vehicle name (editable) -->
+                    <v-row dense>
+                        <v-col cols="12" class="d-flex align-center">
+                            <v-text-field
+                                v-model="vehicleName"
+                                label="Vehicle name"
+                                dense
+                                hide-details
+                                outlined
+                                class="vehicle-name-field"
+                                style="max-width: 300px;"
+                                @blur="saveVehicleName"
+                            ></v-text-field>
+                        </v-col>
+                    </v-row>
                     <!-- Header: Logo + Stats + Pie Chart -->
                     <v-row dense>
                         <!-- Logo -->
@@ -226,6 +267,9 @@
                                     <v-btn x-small color="primary" class="mr-1" @click="downloadOdometerData">
                                         <v-icon x-small left>mdi-download</v-icon>CSV
                                     </v-btn>
+                                    <v-btn x-small color="secondary" class="mr-1" @click="exportPdf">
+                                        <v-icon x-small left>mdi-file-pdf-box</v-icon>PDF
+                                    </v-btn>
                                     <v-btn x-small color="error" @click="showClearDialog">
                                         <v-icon x-small left>mdi-delete</v-icon>Clear
                                     </v-btn>
@@ -261,8 +305,75 @@
                                             <v-chip :color="item.isCurrent ? 'success' : 'grey'" dark x-small>
                                                 {{ item.isCurrent ? 'Active' : 'Done' }}
                                             </v-chip>
+                                            <v-chip v-if="item.hard_use && !item.isCurrent" color="orange" dark x-small class="ml-1">
+                                                Hard use
+                                            </v-chip>
                                         </template>
                                     </v-data-table>
+                                </v-card-text>
+                            </v-card>
+                        </v-col>
+                    </v-row>
+
+                    <!-- Thruster/Motor Stats (when vehicle has thrusters or motors) -->
+                    <v-row dense class="mt-2" v-if="thrusterData.thruster_count > 0">
+                        <v-col cols="12">
+                            <v-card elevation="2">
+                                <v-card-title class="compact-card-title cyan darken-2 white--text py-1">
+                                    <v-icon color="white" class="mr-2">mdi-ferry</v-icon>
+                                    {{ unitLabel }} Run Hours
+                                </v-card-title>
+                                <v-card-text class="pa-2">
+                                    <div v-for="(grid, gIdx) in layoutGrids" :key="gIdx" class="mb-3">
+                                        <div class="caption mb-1" style="opacity: 0.8;">{{ grid.label }}</div>
+                                        <div class="position-grid">
+                                            <table class="position-grid-table">
+                                                <tbody>
+                                                    <tr v-for="(row, rIdx) in grid.rows" :key="rIdx">
+                                                        <td v-for="(id, cIdx) in row" :key="cIdx">
+                                                            <div class="position-cell">{{ unitLabel }} {{ id }}</div>
+                                                            <div class="position-cell-sub">{{ getThrusterRunTime(id) }}</div>
+                                                            <div class="position-cell-sub">{{ getThrusterPwm(id) }}</div>
+                                                        </td>
+                                                    </tr>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </v-card-text>
+                            </v-card>
+                        </v-col>
+                    </v-row>
+
+                    <!-- Accessories -->
+                    <v-row dense class="mt-2" v-if="accessoriesData.length > 0">
+                        <v-col cols="12">
+                            <v-card elevation="2">
+                                <v-card-title class="compact-card-title deep-purple white--text py-1">
+                                    <v-icon color="white" class="mr-2">mdi-cog</v-icon>
+                                    Accessories
+                                </v-card-title>
+                                <v-card-text class="pa-2">
+                                    <v-simple-table dense>
+                                        <template v-slot:default>
+                                            <thead>
+                                                <tr>
+                                                    <th>Name</th>
+                                                    <th>Ch</th>
+                                                    <th>Run Time</th>
+                                                    <th>Avg PWM</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <tr v-for="a in accessoriesData" :key="a.id">
+                                                    <td>{{ a.name }}</td>
+                                                    <td>{{ a.channel }}</td>
+                                                    <td>{{ formatTime(a.run_minutes) }}</td>
+                                                    <td>{{ a.avg_pwm_armed ? a.avg_pwm_armed + ' us' : '-' }}</td>
+                                                </tr>
+                                            </tbody>
+                                        </template>
+                                    </v-simple-table>
                                 </v-card-text>
                             </v-card>
                         </v-col>
@@ -294,7 +405,7 @@
                                                     outlined
                                                 ></v-select>
                                             </v-col>
-                                            <v-col cols="12" sm="7">
+                                            <v-col cols="12" sm="7" v-if="newRecord.event_type !== 'Add Device'">
                                                 <v-text-field
                                                     v-model="newRecord.details"
                                                     label="Details"
@@ -303,16 +414,67 @@
                                                     outlined
                                                 ></v-text-field>
                                             </v-col>
+                                            <v-col cols="12" sm="7" v-if="newRecord.event_type === 'Add Device'" class="d-flex align-center">
+                                                <span class="caption">Enter device name and channel below</span>
+                                            </v-col>
                                             <v-col cols="12" sm="2">
                                                 <v-btn 
                                                     block
                                                     small
                                                     color="success" 
-                                                    :disabled="!newRecord.event_type || !newRecord.details"
+                                                    :disabled="!canSubmitMaintenance"
                                                     @click="submitMaintenanceForm"
                                                 >
                                                     <v-icon small left>mdi-plus</v-icon>Add
                                                 </v-btn>
+                                            </v-col>
+                                        </v-row>
+                                                        <!-- Add Device: name + channel -->
+                                        <v-row dense v-if="newRecord.event_type === 'Add Device'">
+                                            <v-col cols="12" sm="6">
+                                                <v-text-field
+                                                    v-model="newRecord.device_name"
+                                                    label="Device name"
+                                                    dense
+                                                    hide-details
+                                                    outlined
+                                                ></v-text-field>
+                                            </v-col>
+                                            <v-col cols="12" sm="4">
+                                                <v-select
+                                                    v-model="newRecord.device_channel"
+                                                    :items="channelOptions"
+                                                    label="Channel"
+                                                    dense
+                                                    hide-details
+                                                    outlined
+                                                ></v-select>
+                                            </v-col>
+                                        </v-row>
+                                        <!-- Thruster/Motor options for Replacement, Repair, Sticking -->
+                                        <v-row dense v-if="showThrusterOptions">
+                                            <v-col cols="12" sm="6">
+                                                <v-select
+                                                    v-model="newRecord.thruster_ids"
+                                                    :items="thrusterOptions"
+                                                    :label="unitLabel + '(s)'"
+                                                    multiple
+                                                    chips
+                                                    small-chips
+                                                    dense
+                                                    hide-details
+                                                    outlined
+                                                    :rules="thrusterSelectRules"
+                                                ></v-select>
+                                            </v-col>
+                                            <v-col cols="12" sm="6" v-if="showResetRunHoursOption">
+                                                <v-checkbox
+                                                    v-model="newRecord.reset_run_hours"
+                                                    :label="'Reset run hours for selected ' + unitLabel.toLowerCase() + '(s)'"
+                                                    dense
+                                                    hide-details
+                                                    class="mt-0"
+                                                ></v-checkbox>
                                             </v-col>
                                         </v-row>
                                     </v-form>
@@ -333,6 +495,13 @@
                                             <v-chip :color="getEventTypeColor(item.event_type)" dark x-small>
                                                 {{ item.event_type }}
                                             </v-chip>
+                                        </template>
+                                        <template v-slot:item.thruster_ids="{ item }">
+                                            <span v-if="item.thruster_ids && item.thruster_ids.length">
+                                                {{ item.thruster_ids.map(i => (unitLabel === 'Motor' ? 'M' : 'T') + i).join(', ') }}
+                                                <v-chip v-if="item.reset_run_hours" x-small color="success" dark class="ml-1">Reset</v-chip>
+                                            </span>
+                                            <span v-else class="grey--text">-</span>
                                         </template>
                                         <template v-slot:item.actions="{ item }">
                                             <v-icon x-small class="mr-1" @click="openEditDialog(item)">mdi-pencil</v-icon>
@@ -536,13 +705,18 @@
                         { text: 'Date/Time', value: 'timestamp' },
                         { text: 'Event Type', value: 'event_type' },
                         { text: 'Details', value: 'details' },
+                        { text: 'Thrusters/Motors', value: 'thruster_ids' },
                         { text: 'Actions', value: 'actions', sortable: false, align: 'end' }
                     ],
                     newRecord: {
                         event_type: '',
-                        details: ''
+                        details: '',
+                        thruster_ids: [],
+                        reset_run_hours: false,
+                        device_name: '',
+                        device_channel: 1
                     },
-                    eventTypes: ['Repair', 'Replacement', 'Maintenance', 'Inspection', 'Note'],
+                    eventTypesBase: ['Add Device', 'Repair', 'Replacement', 'Maintenance', 'Inspection', 'Note'],
                     validForm: false,
                     snackbar: {
                         show: false,
@@ -682,13 +856,24 @@
                     usage: [],
                     currentUsage: null,
                     allUsage: [],
+                    thrusterData: {
+                        thruster_count: 0,
+                        mav_type: -1,
+                        layout: { unit: 'thruster', unit_plural: 'thrusters', grids: [] },
+                        thrusters: []
+                    },
+                    vehicleName: '',
+                    accessoriesData: []
                 }
             },
-            mounted() {
+                mounted() {
                 this.fetchStats();
+                this.fetchVehicle();
                 this.fetchMaintenanceLog();
                 this.fetchHistoricalData();
                 this.fetchUsage();
+                this.fetchThrusters();
+                this.fetchAccessories();
                 
                 // Set up initial theme detection
                 this.setupThemeDetection();
@@ -698,6 +883,8 @@
                     if (!document.hidden) {
                         this.fetchStats();
                         this.fetchUsage();
+                        this.fetchThrusters();
+                        this.fetchAccessories();
                         // Fetch historical data every 2 cycles (1 minute) instead of every 4 cycles (2 minutes)
                         if (this.updateCount % 2 === 0) {
                             this.fetchHistoricalData();
@@ -758,6 +945,60 @@
                     const total = armed + disarmed;
                     if (total <= 0) return 0;
                     return (disarmed / total) * 100;
+                },
+                thrusterOptions() {
+                    const unit = (this.thrusterData.layout && this.thrusterData.layout.unit) || 'thruster';
+                    const cap = unit.charAt(0).toUpperCase() + unit.slice(1);
+                    return this.thrusterData.thrusters.map(t => ({
+                        text: cap + ' ' + t.id,
+                        value: t.id
+                    }));
+                },
+                layoutGrids() {
+                    return (this.thrusterData.layout && this.thrusterData.layout.grids) || [];
+                },
+                unitLabel() {
+                    return (this.thrusterData.layout && this.thrusterData.layout.unit) === 'motor' ? 'Motor' : 'Thruster';
+                },
+                eventTypes() {
+                    const sticking = this.unitLabel === 'Motor' ? 'Motor Sticking' : 'Thruster Sticking';
+                    const base = this.eventTypesBase;
+                    const idx = base.indexOf('Note');
+                    return idx >= 0 ? [...base.slice(0, idx), sticking, ...base.slice(idx)] : [...base, sticking];
+                },
+                showThrusterOptions() {
+                    const sticking = this.unitLabel === 'Motor' ? 'Motor Sticking' : 'Thruster Sticking';
+                    return (this.newRecord.event_type === 'Replacement' || 
+                            this.newRecord.event_type === 'Repair' || 
+                            this.newRecord.event_type === sticking) && 
+                           this.thrusterData.thruster_count > 0;
+                },
+                showResetRunHoursOption() {
+                    return (this.newRecord.event_type === 'Replacement' || 
+                            this.newRecord.event_type === 'Repair') && 
+                           this.thrusterData.thruster_count > 0;
+                },
+                thrusterSelectRules() {
+                    const sticking = this.unitLabel === 'Motor' ? 'Motor Sticking' : 'Thruster Sticking';
+                    if (this.newRecord.event_type === sticking) {
+                        return [v => (v && v.length > 0) || 'Select at least one ' + this.unitLabel.toLowerCase()];
+                    }
+                    return [];
+                },
+                canSubmitMaintenance() {
+                    if (!this.newRecord.event_type) return false;
+                    if (this.newRecord.event_type === 'Add Device') {
+                        return !!this.newRecord.device_name && !!this.newRecord.device_channel;
+                    }
+                    if (!this.newRecord.details) return false;
+                    const sticking = this.unitLabel === 'Motor' ? 'Motor Sticking' : 'Thruster Sticking';
+                    if (this.newRecord.event_type === sticking) {
+                        return this.newRecord.thruster_ids && this.newRecord.thruster_ids.length > 0;
+                    }
+                    return true;
+                },
+                channelOptions() {
+                    return [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16].map(n => ({ text: 'Ch ' + n, value: n }));
                 }
             },
             methods: {
@@ -906,6 +1147,36 @@
                         this.usageChart.update();
                     }
                 },
+                fetchVehicle() {
+                    axios.get('/vehicle')
+                        .then(response => {
+                            if (response.data.status === 'success') {
+                                this.vehicleName = response.data.data.name || '';
+                            }
+                        })
+                        .catch(() => {});
+                },
+                saveVehicleName() {
+                    axios.post('/vehicle', { name: this.vehicleName })
+                        .then(response => {
+                            if (response.data.status === 'success') {
+                                this.showSnackbar('Vehicle name saved');
+                            }
+                        })
+                        .catch(() => {});
+                },
+                fetchAccessories() {
+                    axios.get('/accessories')
+                        .then(response => {
+                            if (response.data.status === 'success') {
+                                this.accessoriesData = response.data.data;
+                            }
+                        })
+                        .catch(() => {});
+                },
+                exportPdf() {
+                    window.location.href = '/export/pdf';
+                },
                 fetchStats() {
                     axios.get('/stats')
                         .then(response => {
@@ -960,18 +1231,46 @@
                             this.showSnackbar('Failed to fetch maintenance log', 'error');
                         });
                 },
+                fetchThrusters() {
+                    axios.get('/thrusters')
+                        .then(response => {
+                            if (response.data.status === 'success') {
+                                this.thrusterData = response.data.data;
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Error fetching thruster stats:', error);
+                        });
+                },
                 submitMaintenanceForm() {
-                    if (!this.$refs.form.validate()) return;
+                    if (!this.canSubmitMaintenance) return;
+                    if (this.$refs.form && !this.$refs.form.validate()) return;
 
-                    axios.post('/maintenance', this.newRecord)
+                    const payload = {
+                        event_type: this.newRecord.event_type,
+                        details: this.newRecord.event_type === 'Add Device' ? '' : this.newRecord.details,
+                        thruster_ids: this.newRecord.thruster_ids || [],
+                        reset_run_hours: this.newRecord.reset_run_hours || false
+                    };
+                    if (this.newRecord.event_type === 'Add Device') {
+                        payload.device_name = this.newRecord.device_name;
+                        payload.device_channel = this.newRecord.device_channel;
+                    }
+
+                    axios.post('/maintenance', payload)
                         .then(response => {
                             if (response.data.status === 'success') {
                                 this.showSnackbar('Maintenance record added successfully');
                                 this.newRecord.event_type = '';
                                 this.newRecord.details = '';
-                                this.$refs.form.reset();
-                                // Refresh the maintenance log
+                                this.newRecord.thruster_ids = [];
+                                this.newRecord.reset_run_hours = false;
+                                this.newRecord.device_name = '';
+                                this.newRecord.device_channel = 1;
+                                if (this.$refs.form) this.$refs.form.reset();
                                 this.fetchMaintenanceLog();
+                                this.fetchThrusters();
+                                this.fetchAccessories();
                             } else {
                                 this.showSnackbar(response.data.message || 'Failed to add record', 'error');
                             }
@@ -1053,13 +1352,24 @@
                 },
                 getEventTypeColor(type) {
                     const colors = {
+                        'Add Device': 'deep-purple',
                         'Repair': 'red',
                         'Replacement': 'blue',
                         'Maintenance': 'green',
                         'Inspection': 'amber',
+                        'Thruster Sticking': 'orange',
+                        'Motor Sticking': 'orange',
                         'Note': 'grey'
                     };
                     return colors[type] || 'primary';
+                },
+                getThrusterRunTime(id) {
+                    const t = this.thrusterData.thrusters.find(x => x.id === id);
+                    return t ? this.formatTime(t.run_minutes) : '-';
+                },
+                getThrusterPwm(id) {
+                    const t = this.thrusterData.thrusters.find(x => x.id === id);
+                    return t && t.avg_pwm_armed ? t.avg_pwm_armed + ' us' : '-';
                 },
                 showSnackbar(text, color = 'success') {
                     this.snackbar.text = text;

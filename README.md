@@ -6,6 +6,8 @@ The BlueOS Odometer Extension tracks your vehicle's usage stats and maintenance 
 
 - **Uptime Tracking**: Counts total minutes of vehicle operation
 - **Armed/Disarmed Time**: Tracks how long your vehicle has been in armed vs. disarmed states
+- **Per-Thruster Run Hours**: Individual run-hour tracking for each thruster
+- **Thruster Duty Cycle**: Average PWM value when armed (duty-cycle indicator)
 - **Battery Monitoring**: Records battery voltage and detects battery swaps
 - **Maintenance Log**: Add and track repair, replacement, and maintenance events
 - **Data Export**: Download all collected data as CSV files
@@ -25,13 +27,24 @@ The Odometer polls the Mavlink2Rest API once per minute to:
 3. Monitor battery voltage and detect battery swaps (when voltage increases by > 1V)
 4. Record all this data to a persistent CSV file
 
+### Per-Thruster / Per-Motor Tracking
+
+The extension detects vehicle type from the MAVLink HEARTBEAT message and tracks run hours per thruster (ROVs) or per motor (boats):
+
+- **ArduSub** (ROV): 4–8 thrusters (default 8)
+- **BlueBoat/ArduRover** (boat with skid steer): 2 motors
+
+When armed, each thruster/motor's run minutes are incremented. PWM values are sampled every 5 seconds for duty-cycle averaging. The UI shows position grids to correlate numbers with physical layout (e.g. vertical vs horizontal thrusters for ROVs, port/starboard for boats).
+
 ### Maintenance Logging
 
 The maintenance log helps you track all important events related to your vehicle's upkeep. You can access it through the web interface, where you can:
 
 1. **Add New Records**:
-   - Select an event type (Repair, Replacement, Maintenance, Inspection, or Note)
+   - Select an event type (Repair, Replacement, Maintenance, Inspection, Thruster Sticking, or Note)
    - Add detailed description of the work performed
+   - For **Replacement** or **Repair**: optionally select which thruster(s) were replaced/repaired and check "Reset run hours" to zero the run-time for those thrusters
+   - For **Thruster Sticking**: select which thruster(s) were found sticking and required minor intervention
    - Records are automatically timestamped with the current time
 
 2. **Edit Records**:
@@ -62,6 +75,7 @@ The maintenance log supports the following event types, each color-coded for eas
 - **Replacement** (Blue): For replacing components or parts
 - **Maintenance** (Green): For documenting routine maintenance tasks
 - **Inspection** (Amber): For system checks and inspections
+- **Thruster Sticking** (Orange): For logging when a thruster motor was found sticking and required minor intervention
 - **Note** (Grey): For general notes or observations
 
 ## Requirements
