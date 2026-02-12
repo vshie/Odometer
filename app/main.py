@@ -34,6 +34,8 @@ DATA_DIR = Path('/app/data')
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 ODOMETER_CSV = DATA_DIR / 'odometer.csv'
 MAINTENANCE_CSV = DATA_DIR / 'maintenance.csv'
+MISSIONS_CSV = DATA_DIR / 'missions.csv'
+CURRENT_SESSION_FILE = DATA_DIR / 'current_session.json'
 STARTUP_MARKER = DATA_DIR / '.startup_marker'
 CPU_TEMP_PATH = Path('/sys/class/thermal/thermal_zone0/temp')
 
@@ -53,6 +55,7 @@ PORT = 80  # Port to run the server on
 WEBSOCKET_PORT = 8765  # Port for Cockpit data lake streaming
 WEBSOCKET_UPDATE_INTERVAL = 1.0  # Seconds between WebSocket updates
 DIVE_DEPTH_THRESHOLD = 1.0  # Depth threshold in meters to count as diving
+BATTERY_SWAP_VOLTAGE_THRESHOLD = 1.0  # Voltage increase (V) to detect battery swap on reconnect
 
 app = Flask(__name__, static_folder='static')
 
@@ -133,13 +136,16 @@ class OdometerService:
                 'total_ah': 0.0,
                 'start_uptime': 0,
                 'end_uptime': 0
-            }
+            },
+            'pending_battery_swap_check': False  # Set on startup when previous session had voltage drop
         }
         self.missions = []  # List to store completed missions
         self.last_update_time = time.time()
         self.minutes_since_update = 0
         self.setup_csv_files()
         self.load_stats()
+        self.load_missions()
+        self.close_previous_session_on_startup()
         self.detect_startup()
         
         # Start the update thread
@@ -247,6 +253,146 @@ class OdometerService:
             with open(MAINTENANCE_CSV, 'w', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow(['timestamp', 'event_type', 'details'])
+        
+        # Set up missions CSV file for persistent usage history
+        if not MISSIONS_CSV.exists():
+            with open(MISSIONS_CSV, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['start_time', 'end_time', 'start_voltage', 'end_voltage',
+                               'start_cpu_temp', 'end_cpu_temp', 'total_ah', 'start_uptime', 'end_uptime'])
+    
+    def load_missions(self):
+        """Load completed missions from persistent storage"""
+        if MISSIONS_CSV.exists():
+            try:
+                with open(MISSIONS_CSV, 'r', newline='') as f:
+                    reader = csv.reader(f)
+                    headers = next(reader, None)
+                    if headers:
+                        for row in reader:
+                            if len(row) >= 9:
+                                self.missions.append({
+                                    'start_time': row[0],
+                                    'end_time': row[1],
+                                    'start_voltage': float(row[2]) if row[2].strip() else 0.0,
+                                    'end_voltage': float(row[3]) if row[3].strip() else 0.0,
+                                    'start_cpu_temp': float(row[4]) if row[4].strip() else 0.0,
+                                    'end_cpu_temp': float(row[5]) if row[5].strip() else 0.0,
+                                    'total_ah': float(row[6]) if row[6].strip() else 0.0,
+                                    'start_uptime': int(row[7]) if row[7].strip() else 0,
+                                    'end_uptime': int(row[8]) if row[8].strip() else 0
+                                })
+                logger.info(f"Loaded {len(self.missions)} missions from {MISSIONS_CSV}")
+            except Exception as e:
+                logger.error(f"Error loading missions: {e}")
+    
+    def save_mission(self, mission: dict):
+        """Append a single mission to persistent storage"""
+        try:
+            with open(MISSIONS_CSV, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    mission.get('start_time', ''),
+                    mission.get('end_time', ''),
+                    str(mission.get('start_voltage', 0)),
+                    str(mission.get('end_voltage', 0)),
+                    str(mission.get('start_cpu_temp', 0)),
+                    str(mission.get('end_cpu_temp', 0)),
+                    str(mission.get('total_ah', 0)),
+                    str(mission.get('start_uptime', 0)),
+                    str(mission.get('end_uptime', 0))
+                ])
+        except Exception as e:
+            logger.error(f"Error saving mission: {e}")
+    
+    def persist_current_session(self):
+        """Save current mission/session to disk so it survives power-off"""
+        try:
+            mission = self.stats['current_mission']
+            if mission.get('start_time') is not None:
+                with open(CURRENT_SESSION_FILE, 'w') as f:
+                    json.dump(mission, f, default=str)
+        except Exception as e:
+            logger.error(f"Error persisting current session: {e}")
+    
+    def close_previous_session_on_startup(self):
+        """
+        On startup, close out the session that was running when the system was powered off.
+        This records each power-on block as an entry in usage history.
+        Also sets pending_battery_swap_check if voltage decreased during that session
+        (will increment battery_swaps when we see high voltage on reconnect).
+        """
+        if not CURRENT_SESSION_FILE.exists():
+            return
+        
+        try:
+            with open(CURRENT_SESSION_FILE, 'r') as f:
+                prev_session = json.load(f)
+            
+            start_time = prev_session.get('start_time')
+            if not start_time:
+                return
+            
+            # Get end state from last row of odometer CSV
+            end_time = None
+            end_voltage = 0.0
+            end_cpu_temp = 0.0
+            end_uptime = 0
+            
+            if ODOMETER_CSV.exists():
+                with open(ODOMETER_CSV, 'r', newline='') as f:
+                    reader = csv.reader(f)
+                    headers = next(reader, [])
+                    has_dive_minutes = 'dive_minutes' in headers
+                    last_row = None
+                    for row in reader:
+                        if row and not all(cell.strip() == '' for cell in row):
+                            last_row = row
+                    
+                    if last_row:
+                        end_time = last_row[0] if last_row else None
+                        if has_dive_minutes and len(last_row) >= 10:
+                            end_voltage = float(last_row[7]) if last_row[7].strip() else 0.0
+                            end_cpu_temp = float(last_row[9]) if last_row[9].strip() else 0.0
+                            end_uptime = int(last_row[1]) if last_row[1].strip() else 0  # total_minutes
+                        elif len(last_row) >= 9:
+                            end_voltage = float(last_row[6]) if last_row[6].strip() else 0.0
+                            end_cpu_temp = float(last_row[7]) if last_row[7].strip() else 0.0
+                            end_uptime = int(last_row[1]) if last_row[1].strip() else 0
+            
+            if not end_time:
+                end_time = self.get_local_time().isoformat()
+            
+            # Build completed mission
+            mission = {
+                'start_time': start_time,
+                'end_time': end_time,
+                'start_voltage': float(prev_session.get('start_voltage', 0)),
+                'end_voltage': end_voltage,
+                'start_cpu_temp': float(prev_session.get('start_cpu_temp', 0)),
+                'end_cpu_temp': end_cpu_temp,
+                'total_ah': float(prev_session.get('total_ah', 0)),
+                'start_uptime': prev_session.get('start_uptime', 0),
+                'end_uptime': end_uptime
+            }
+            
+            self.missions.append(mission)
+            self.save_mission(mission)
+            logger.info(f"Recorded previous power-on session to usage history: {mission}")
+            
+            # Check if voltage decreased during that session - if so, battery swap likely on reconnect
+            start_voltage = mission['start_voltage']
+            if start_voltage > 0 and end_voltage > 0 and end_voltage < start_voltage:
+                with self.stats_lock:
+                    self.stats['pending_battery_swap_check'] = True
+                    self.stats['last_voltage'] = end_voltage  # For comparison when we get first reading
+                logger.info(f"Voltage decreased during previous session ({start_voltage}V -> {end_voltage}V); will check for battery swap on first voltage reading")
+            
+            # Remove the session file so we don't process it again
+            CURRENT_SESSION_FILE.unlink(missing_ok=True)
+            
+        except Exception as e:
+            logger.error(f"Error closing previous session on startup: {e}")
     
     def cleanup_csv(self):
         """Clean up the CSV file by removing bad rows and ensuring proper format"""
@@ -458,6 +604,14 @@ class OdometerService:
                 # Store current depth
                 self.stats['last_depth'] = current_depth
                 
+                # Check for battery swap on startup (voltage decreased last session, high now)
+                if self.stats.get('pending_battery_swap_check') and current_voltage > 0:
+                    last_v = self.stats['last_voltage']
+                    if last_v > 0 and current_voltage > (last_v + BATTERY_SWAP_VOLTAGE_THRESHOLD):
+                        self.stats['battery_swaps'] += 1
+                        logger.info(f"Battery swap detected on reconnect: voltage was {last_v}V at shutdown, now {current_voltage}V")
+                    self.stats['pending_battery_swap_check'] = False
+                
                 # Update voltage tracking for averaging
                 if current_voltage > 0:
                     self.stats['voltage_sum'] += current_voltage
@@ -498,6 +652,7 @@ class OdometerService:
                                 'end_uptime': self.stats['total_minutes']
                             }
                             self.missions.append(mission)
+                            self.save_mission(mission)
                             logger.info(f"Mission completed: {mission}")
                         
                         # Start new mission
@@ -556,10 +711,29 @@ class OdometerService:
                     # Update last values
                     self.stats['last_current_consumed'] = current_consumed
                     self.stats['last_voltage'] = current_voltage
+                else:
+                    # No vehicle/voltage (e.g. bench test without MAVLink) - still track session for usage history
+                    if self.stats['current_mission']['start_time'] is None:
+                        self.stats['current_mission'] = {
+                            'start_time': self.get_local_time(),
+                            'start_voltage': 0.0,
+                            'start_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
+                            'end_voltage': 0.0,
+                            'end_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
+                            'total_ah': 0.0,
+                            'start_uptime': self.stats['total_minutes'],
+                            'end_uptime': self.stats['total_minutes']
+                        }
+                    else:
+                        self.stats['current_mission']['end_cpu_temp'] = current_cpu_temp if current_cpu_temp > 0 else self.stats['current_mission']['end_cpu_temp']
+                        self.stats['current_mission']['end_uptime'] = self.stats['total_minutes']
                 
                 # Update CPU temperature if valid
                 if current_cpu_temp > 0:
                     self.stats['cpu_temp'] = current_cpu_temp
+                
+                # Persist current session so it survives power-off (enables usage history on next boot)
+                self.persist_current_session()
                 
                 # Write to CSV
                 self.write_stats_to_csv(time_status)
