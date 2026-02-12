@@ -1,7 +1,12 @@
 FROM python:3.11-slim
 
-# Install required dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
+# Install required dependencies (gcc etc. for building pillow, used by reportlab)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    gcc \
+    python3-dev \
+    libjpeg-dev \
+    zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY app /app
