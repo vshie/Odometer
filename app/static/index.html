@@ -14,6 +14,12 @@
             text-align: center;
             padding: 8px 4px;
         }
+        @media (max-width: 600px) {
+            .stat-value { font-size: 1.1rem; }
+            .stat-label { font-size: 0.65rem; }
+            .mobile-container { padding-left: 12px !important; padding-right: 12px !important; }
+            .mobile-dialog { max-width: 95vw !important; margin: 12px auto !important; }
+        }
         .logo-wrapper {
             width: 100%;
             height: 100%;
@@ -23,6 +29,9 @@
             align-items: center;
             justify-content: center;
             flex: 1;
+        }
+        @media (max-width: 600px) {
+            .logo-wrapper { max-height: 80px; }
         }
         .app-logo {
             width: 100%;
@@ -50,12 +59,24 @@
         .compact-card-title .v-icon {
             font-size: 20px !important;
         }
+        @media (max-width: 600px) {
+            .compact-card-title {
+                flex-wrap: wrap !important;
+            }
+            .compact-card-title .v-btn {
+                margin-bottom: 4px;
+            }
+        }
         .maintenance-table {
             border-radius: 8px;
             overflow: hidden;
         }
         .v-data-table td, .v-data-table th {
             padding: 0 8px !important;
+        }
+        .table-scroll-wrapper {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
         }
         /* Stacked bar chart styles */
         .usage-bar-container {
@@ -89,12 +110,18 @@
             text-shadow: 0 1px 2px rgba(0,0,0,0.3);
         }
         /* Position grid for thrusters/motors */
+        .position-grid-wrapper {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            margin: 8px 0;
+        }
         .position-grid {
             display: inline-block;
             border: 1px solid rgba(128,128,128,0.4);
             border-radius: 4px;
             padding: 8px;
             margin: 8px;
+            min-width: min-content;
         }
         .position-grid-table {
             border-collapse: collapse;
@@ -104,6 +131,12 @@
             padding: 12px 16px;
             text-align: center;
             min-width: 60px;
+        }
+        @media (max-width: 600px) {
+            .position-grid-table td {
+                padding: 8px 10px;
+                min-width: 50px;
+            }
         }
         .position-cell {
             font-weight: bold;
@@ -120,7 +153,7 @@
     <div id="app">
         <v-app :theme="isDarkMode ? 'dark' : 'light'">
             <v-main>
-                <v-container fluid class="pa-3">
+                    <v-container fluid class="pa-3 mobile-container">
                     <!-- Vehicle name (editable) -->
                     <v-row dense>
                         <v-col cols="12" class="d-flex align-center">
@@ -148,32 +181,32 @@
                         <v-col cols="12" sm="5">
                             <v-card elevation="2" class="pa-2">
                                 <v-row dense no-gutters>
-                                    <v-col cols="4" class="stat-item">
+                                    <v-col cols="6" sm="4" class="stat-item">
                                         <v-icon class="stat-icon" color="primary">mdi-timer</v-icon>
                                         <div class="stat-value primary--text">{{ formatTime(stats.total_minutes) }}</div>
                                         <div class="stat-label">Total Uptime</div>
                                     </v-col>
-                                    <v-col cols="4" class="stat-item">
+                                    <v-col cols="6" sm="4" class="stat-item">
                                         <v-icon class="stat-icon" color="success">mdi-shield-lock</v-icon>
                                         <div class="stat-value success--text">{{ formatTime(stats.armed_minutes) }}</div>
                                         <div class="stat-label">Armed</div>
                                     </v-col>
-                                    <v-col cols="4" class="stat-item">
+                                    <v-col cols="6" sm="4" class="stat-item">
                                         <v-icon class="stat-icon" color="orange">mdi-shield-off</v-icon>
                                         <div class="stat-value orange--text">{{ formatTime(stats.disarmed_minutes) }}</div>
                                         <div class="stat-label">Disarmed</div>
                                     </v-col>
-                                    <v-col cols="4" class="stat-item">
+                                    <v-col cols="6" sm="4" class="stat-item">
                                         <v-icon class="stat-icon" color="teal">mdi-battery</v-icon>
                                         <div class="stat-value teal--text">{{ stats.last_voltage.toFixed(1) }}V</div>
                                         <div class="stat-label">Voltage</div>
                                     </v-col>
-                                    <v-col cols="4" class="stat-item">
+                                    <v-col cols="6" sm="4" class="stat-item">
                                         <v-icon class="stat-icon" color="deep-orange">mdi-thermometer</v-icon>
                                         <div class="stat-value deep-orange--text">{{ stats.cpu_temp.toFixed(0) }}°C</div>
                                         <div class="stat-label">CPU Temp</div>
                                     </v-col>
-                                    <v-col cols="4" class="stat-item">
+                                    <v-col cols="6" sm="4" class="stat-item">
                                         <v-icon class="stat-icon" color="indigo">mdi-battery-sync</v-icon>
                                         <div class="stat-value indigo--text">{{ stats.battery_swaps }}</div>
                                         <div class="stat-label">Swaps</div>
@@ -188,20 +221,20 @@
                                         <div class="stat-value blue-grey--text">{{ stats.total_wh_consumed.toFixed(1) }} Wh</div>
                                         <div class="stat-label">Lifetime Energy</div>
                                     </v-col>
-                                    <v-col cols="4" class="stat-item" v-if="(stats.total_distance_m || 0) > 0">
+                                    <v-col cols="6" sm="4" class="stat-item" v-if="(stats.total_distance_m || 0) > 0">
                                         <v-icon class="stat-icon" color="cyan">mdi-map-marker-distance</v-icon>
                                         <div class="stat-value cyan--text">{{ formatDistance(stats.total_distance_m || 0) }}</div>
                                         <div class="stat-label">Distance</div>
                                     </v-col>
-                                    <v-col cols="4" class="stat-item" v-if="(stats.dive_minutes || 0) > 0">
+                                    <v-col cols="6" sm="4" class="stat-item" v-if="(stats.dive_minutes || 0) > 0">
                                         <v-icon class="stat-icon" color="blue">mdi-water</v-icon>
                                         <div class="stat-value blue--text">{{ formatTime(stats.dive_minutes || 0) }}</div>
                                         <div class="stat-label">Dive Time</div>
                                     </v-col>
                                     <v-col cols="12" class="stat-item pt-0" v-if="Object.keys(stats.mode_minutes || {}).length > 0">
                                         <div class="caption mb-1" style="opacity: 0.8;">Flight modes</div>
-                                        <div class="d-flex flex-wrap gap-1">
-                                            <v-chip v-for="(mins, mode) in stats.mode_minutes" :key="mode" x-small outlined>
+                                        <div class="d-flex flex-wrap" style="gap: 4px;">
+                                            <v-chip v-for="(mins, mode) in stats.mode_minutes" :key="mode" x-small outlined class="ma-0">
                                                 {{ mode }}: {{ formatTimeCompact(mins) }}
                                             </v-chip>
                                         </div>
@@ -235,7 +268,7 @@
                                         </span>
                                     </div>
                                 </div>
-                                <div class="d-flex justify-space-between mt-1">
+                                <div class="d-flex flex-wrap justify-space-between mt-1" style="gap: 8px;">
                                     <div class="caption">
                                         <v-icon x-small color="success">mdi-square</v-icon>
                                         Armed: {{ formatTimeCompact(stats.armed_minutes) }} ({{ armedPercent.toFixed(1) }}%)
@@ -293,6 +326,7 @@
                                     </v-btn>
                                 </v-card-title>
                                 <v-card-text class="pa-0">
+                                    <div class="table-scroll-wrapper">
                                     <v-data-table
                                         :headers="usageHeaders"
                                         :items="allUsage"
@@ -346,6 +380,7 @@
                                             >mdi-delete</v-icon>
                                         </template>
                                     </v-data-table>
+                                    </div>
                                 </v-card-text>
                             </v-card>
                         </v-col>
@@ -362,6 +397,7 @@
                                 <v-card-text class="pa-2">
                                     <div v-for="(grid, gIdx) in layoutGrids" :key="gIdx" class="mb-3">
                                         <div class="caption mb-1" style="opacity: 0.8;">{{ grid.label }}</div>
+                                        <div class="position-grid-wrapper">
                                         <div class="position-grid">
                                             <table class="position-grid-table">
                                                 <tbody>
@@ -374,6 +410,7 @@
                                                     </tr>
                                                 </tbody>
                                             </table>
+                                        </div>
                                         </div>
                                     </div>
                                 </v-card-text>
@@ -390,6 +427,7 @@
                                     Accessories
                                 </v-card-title>
                                 <v-card-text class="pa-2">
+                                    <div class="table-scroll-wrapper">
                                     <v-simple-table dense>
                                         <template v-slot:default>
                                             <thead>
@@ -410,6 +448,7 @@
                                             </tbody>
                                         </template>
                                     </v-simple-table>
+                                    </div>
                                 </v-card-text>
                             </v-card>
                         </v-col>
@@ -516,6 +555,7 @@
                                     </v-form>
                                     <v-divider class="my-2"></v-divider>
                                     <!-- Maintenance Table -->
+                                    <div class="table-scroll-wrapper">
                                     <v-data-table
                                         :headers="maintenanceHeaders"
                                         :items="maintenanceLog"
@@ -544,13 +584,14 @@
                                             <v-icon x-small color="error" @click="openDeleteDialog(item)">mdi-delete</v-icon>
                                         </template>
                                     </v-data-table>
+                                    </div>
                                 </v-card-text>
                             </v-card>
                         </v-col>
                     </v-row>
 
                     <!-- Edit Maintenance Dialog -->
-                    <v-dialog v-model="editDialog.show" max-width="500px">
+                    <v-dialog v-model="editDialog.show" max-width="500px" content-class="mobile-dialog">
                         <v-card>
                             <v-card-title class="blue darken-2 white--text">
                                 <span>Edit Record Time</span>
@@ -586,7 +627,7 @@
                     </v-dialog>
 
                     <!-- Delete Maintenance Dialog -->
-                    <v-dialog v-model="deleteDialog.show" max-width="500px">
+                    <v-dialog v-model="deleteDialog.show" max-width="500px" content-class="mobile-dialog">
                         <v-card>
                             <v-card-title class="error white--text">
                                 <span>Delete Maintenance Record</span>
@@ -646,7 +687,7 @@
                     </v-dialog>
 
                     <!-- Clear Usage History Confirmation Dialog -->
-                    <v-dialog v-model="clearDialog.show" max-width="500px">
+                    <v-dialog v-model="clearDialog.show" max-width="500px" content-class="mobile-dialog">
                         <v-card>
                             <v-card-title class="error white--text">
                                 <span>Clear Usage History</span>
@@ -694,7 +735,7 @@
                     </v-dialog>
 
                     <!-- Delete single usage row confirmation -->
-                    <v-dialog v-model="deleteUsageDialog.show" max-width="400px">
+                    <v-dialog v-model="deleteUsageDialog.show" max-width="400px" content-class="mobile-dialog">
                         <v-card>
                             <v-card-title class="error white--text">
                                 <span>Delete Usage Session</span>
@@ -824,12 +865,12 @@
                                 time: {
                                     unit: 'minute',
                                     displayFormats: {
-                                        minute: 'MMM d HH:mm',
-                                        hour: 'MMM d HH:mm',
-                                        day: 'MMM d',
-                                        week: 'MMM d',
-                                        month: 'MMM yyyy'
-                                    }
+                                        minute: 'HH:mm',
+                                        hour: 'HH:mm',
+                                        day: 'HH:mm',
+                                        week: 'HH:mm',
+                                        month: 'MMM d'
+                                    },
                                 },
                                 ticks: {
                                     maxRotation: 45,
@@ -881,11 +922,14 @@
                                 }
                             },
                             tooltip: {
+                                enabled: true,
                                 mode: 'index',
                                 intersect: false,
                                 callbacks: {
                                     title: function(tooltipItems) {
-                                        return format(new Date(tooltipItems[0].parsed.x), 'MMM d, yyyy HH:mm:ss');
+                                        if (!tooltipItems || !tooltipItems.length) return '';
+                                        const d = new Date(tooltipItems[0].parsed.x);
+                                        return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'medium' });
                                     },
                                     label: function(context) {
                                         let label = context.dataset.label || '';

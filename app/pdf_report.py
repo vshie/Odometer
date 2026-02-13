@@ -44,6 +44,17 @@ def _fmt_iso(iso_str: Optional[str]) -> str:
         return iso_str
 
 
+def _fmt_iso_compact(iso_str: Optional[str]) -> str:
+    """Compact format for table cells to prevent overflow."""
+    if not iso_str:
+        return "-"
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        return dt.strftime("%m/%d %H:%M")
+    except Exception:
+        return iso_str
+
+
 def generate_report(
     vehicle_name: str,
     stats: Dict[str, Any],
@@ -129,9 +140,9 @@ def generate_report(
             if s.get("status") == "Active":
                 end_disp = "Now"
             else:
-                end_disp = _fmt_iso(end_iso)
+                end_disp = _fmt_iso_compact(end_iso)
             rows.append([
-                _fmt_iso(start_iso),
+                _fmt_iso_compact(start_iso),
                 end_disp,
                 f"{s.get('start_voltage', 0):.1f}",
                 f"{s.get('end_voltage', 0):.1f}",
@@ -141,10 +152,11 @@ def generate_report(
                 f"{s.get('max_speed', 0):.2f}" if s.get("max_speed") else "-",
                 "Yes" if s.get("hard_use") else "-",
             ])
-        t = Table(rows, colWidths=[1.0 * inch, 1.0 * inch, 0.6 * inch, 0.6 * inch, 0.5 * inch, 0.7 * inch, 0.5 * inch, 0.6 * inch, 0.5 * inch])
+        t = Table(rows, colWidths=[1.2 * inch, 1.2 * inch, 0.5 * inch, 0.5 * inch, 0.45 * inch, 0.55 * inch, 0.45 * inch, 0.5 * inch, 0.45 * inch])
         t.setStyle(TableStyle([
             ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
             ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
         ]))
         story.append(t)
         story.append(Spacer(1, 8))
