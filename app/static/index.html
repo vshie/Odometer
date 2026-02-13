@@ -188,6 +188,24 @@
                                         <div class="stat-value blue-grey--text">{{ stats.total_wh_consumed.toFixed(1) }} Wh</div>
                                         <div class="stat-label">Lifetime Energy</div>
                                     </v-col>
+                                    <v-col cols="4" class="stat-item" v-if="(stats.total_distance_m || 0) > 0">
+                                        <v-icon class="stat-icon" color="cyan">mdi-map-marker-distance</v-icon>
+                                        <div class="stat-value cyan--text">{{ formatDistance(stats.total_distance_m || 0) }}</div>
+                                        <div class="stat-label">Distance</div>
+                                    </v-col>
+                                    <v-col cols="4" class="stat-item" v-if="(stats.dive_minutes || 0) > 0">
+                                        <v-icon class="stat-icon" color="blue">mdi-water</v-icon>
+                                        <div class="stat-value blue--text">{{ formatTime(stats.dive_minutes || 0) }}</div>
+                                        <div class="stat-label">Dive Time</div>
+                                    </v-col>
+                                    <v-col cols="12" class="stat-item pt-0" v-if="Object.keys(stats.mode_minutes || {}).length > 0">
+                                        <div class="caption mb-1" style="opacity: 0.8;">Flight modes</div>
+                                        <div class="d-flex flex-wrap gap-1">
+                                            <v-chip v-for="(mins, mode) in stats.mode_minutes" :key="mode" x-small outlined>
+                                                {{ mode }}: {{ formatTimeCompact(mins) }}
+                                            </v-chip>
+                                        </div>
+                                    </v-col>
                                 </v-row>
                             </v-card>
                         </v-col>
@@ -299,7 +317,16 @@
                                             {{ item.isCurrent ? stats.last_voltage.toFixed(1) : item.end_voltage.toFixed(1) }}V
                                         </template>
                                         <template v-slot:item.total_ah="{ item }">
-                                            {{ item.isCurrent ? (stats.current_battery_wh / stats.last_voltage).toFixed(2) : item.total_ah.toFixed(2) }}Ah
+                                            {{ item.isCurrent ? (stats.last_voltage > 0 ? (stats.current_battery_wh / stats.last_voltage).toFixed(2) : '-') : item.total_ah.toFixed(2) }}Ah
+                                        </template>
+                                        <template v-slot:item.distance_m="{ item }">
+                                            {{ formatDistance(item.distance_m || 0) }}
+                                        </template>
+                                        <template v-slot:item.max_current_a="{ item }">
+                                            {{ (item.max_current_a || 0) > 0 ? (item.max_current_a || 0).toFixed(2) + ' A' : '-' }}
+                                        </template>
+                                        <template v-slot:item.max_speed="{ item }">
+                                            {{ (item.max_speed || 0) > 0 ? (item.max_speed || 0).toFixed(2) + ' m/s' : '-' }}
                                         </template>
                                         <template v-slot:item.status="{ item }">
                                             <v-chip :color="item.isCurrent ? 'success' : 'grey'" dark x-small>
@@ -722,11 +749,14 @@
                         total_minutes: 0,
                         armed_minutes: 0,
                         disarmed_minutes: 0,
+                        dive_minutes: 0,
                         battery_swaps: 0,
                         last_voltage: 0.0,
                         cpu_temp: 0.0,
                         total_wh_consumed: 0.0,
                         current_battery_wh: 0.0,
+                        total_distance_m: 0.0,
+                        mode_minutes: {}
                     },
                     maintenanceLog: [],
                     maintenanceHeaders: [
@@ -883,6 +913,9 @@
                         { text: 'Start V', value: 'start_voltage' },
                         { text: 'End V', value: 'end_voltage' },
                         { text: 'Ah', value: 'total_ah' },
+                        { text: 'Dist', value: 'distance_m' },
+                        { text: 'Max A', value: 'max_current_a' },
+                        { text: 'Max m/s', value: 'max_speed' },
                         { text: 'Status', value: 'status' },
                         { text: '', value: 'actions', sortable: false, align: 'end' }
                     ],
@@ -1329,6 +1362,11 @@
                     document.body.appendChild(a);
                     a.click();
                     document.body.removeChild(a);
+                },
+                formatDistance(meters) {
+                    if (!meters || meters < 0) return '-';
+                    if (meters >= 1000) return (meters / 1000).toFixed(2) + ' km';
+                    return meters.toFixed(0) + ' m';
                 },
                 formatTime(minutes) {
                     const days = Math.floor(minutes / (60 * 24));

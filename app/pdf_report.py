@@ -26,6 +26,14 @@ def _fmt_time(minutes: int) -> str:
     return " ".join(parts)
 
 
+def _fmt_dist(meters: float) -> str:
+    if not meters or meters < 0:
+        return "-"
+    if meters >= 1000:
+        return f"{meters / 1000:.2f} km"
+    return f"{meters:.0f} m"
+
+
 def _fmt_iso(iso_str: Optional[str]) -> str:
     if not iso_str:
         return "-"
@@ -92,7 +100,12 @@ def generate_report(
         ["Startups", str(stats.get("startups", 0))],
         ["Voltage", f"{stats.get('last_voltage', 0):.1f} V"],
         ["Lifetime Energy", f"{stats.get('total_wh_consumed', 0):.1f} Wh"],
+        ["Total Distance", _fmt_dist(stats.get("total_distance_m", 0))],
     ]
+    mode_minutes = stats.get("mode_minutes") or {}
+    if mode_minutes:
+        mode_str = ", ".join(f"{m}: {_fmt_time(int(v))}" for m, v in mode_minutes.items())
+        usage_data.append(["Flight Modes", mode_str])
     t = Table(usage_data, colWidths=[2 * inch, 2 * inch])
     t.setStyle(TableStyle([
         ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
@@ -109,7 +122,7 @@ def generate_report(
     all_sessions.extend([{**m, "status": "Done"} for m in missions])
     if all_sessions:
         story.append(Paragraph("Usage Sessions", heading_style))
-        rows = [["Start", "End", "Start V", "End V", "Ah", "Max PWM (us)", "Hard use"]]
+        rows = [["Start", "End", "Start V", "End V", "Ah", "Dist", "Max A", "Max m/s", "Hard use"]]
         for s in all_sessions:
             start_iso = s.get("start_time")
             end_iso = s.get("end_time")
@@ -123,10 +136,12 @@ def generate_report(
                 f"{s.get('start_voltage', 0):.1f}",
                 f"{s.get('end_voltage', 0):.1f}",
                 f"{s.get('total_ah', 0):.2f}",
-                f"{s.get('max_pwm_deviation', 0):.0f}",
+                _fmt_dist(s.get("distance_m", 0)),
+                f"{s.get('max_current_a', 0):.2f}" if s.get("max_current_a") else "-",
+                f"{s.get('max_speed', 0):.2f}" if s.get("max_speed") else "-",
                 "Yes" if s.get("hard_use") else "-",
             ])
-        t = Table(rows, colWidths=[1.2 * inch, 1.2 * inch, 0.7 * inch, 0.7 * inch, 0.6 * inch, 1.0 * inch, 0.7 * inch])
+        t = Table(rows, colWidths=[1.0 * inch, 1.0 * inch, 0.6 * inch, 0.6 * inch, 0.5 * inch, 0.7 * inch, 0.5 * inch, 0.6 * inch, 0.5 * inch])
         t.setStyle(TableStyle([
             ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
             ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
