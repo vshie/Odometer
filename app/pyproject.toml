@@ -12,5 +12,6 @@ dependencies = [
     "flask>=3.0.0",
     "werkzeug>=3.0.0",
     "reportlab>=4.0.0",
+    "websockets>=10.0",
 ]
 

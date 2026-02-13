@@ -61,12 +61,12 @@ LABEL permissions='\
   }\
 }'
 
-ARG AUTHOR
-ARG AUTHOR_EMAIL
+ARG AUTHOR=Tony
+ARG AUTHOR_EMAIL=tony@bluerobotics.com
 LABEL authors='[\
     {\
         "name": "TONY",\
-        "email": "$tony@bluerobotics.com"\
+        "email": "${AUTHOR_EMAIL}"\
     }\
 ]'
 

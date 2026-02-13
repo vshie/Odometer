@@ -27,7 +27,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.handlers.RotatingFileHandler(log_dir / 'lumber.log', maxBytes=2**16, backupCount=1),
+        logging.handlers.RotatingFileHandler(log_dir / 'odometer.log', maxBytes=2**16, backupCount=1),
         logging.StreamHandler()
     ]
 )
@@ -452,7 +452,7 @@ class OdometerService:
         """Save mode_minutes to JSON file"""
         try:
             with self.stats_lock:
-                data = {'mode_minutes': self.stats.get('mode_minutes', {})}
+                data = {'mode_minutes': dict(self.stats.get('mode_minutes', {}))}
             with open(MODES_FILE, 'w') as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
@@ -1859,6 +1859,10 @@ def add_maintenance():
     device_channel_val = str(device_channel) if event_type == 'Add Device' else ''
     reset_accessory_str = 'true' if reset_accessory else 'false'
     
+    # Ensure maintenance CSV exists with headers (e.g. if manually deleted)
+    if not MAINTENANCE_CSV.exists() or MAINTENANCE_CSV.stat().st_size == 0:
+        odometer_service.setup_csv_files()
+    
     with open(MAINTENANCE_CSV, 'a', newline='') as f:
         writer = csv.writer(f)
         writer.writerow([timestamp, event_type, details, thruster_ids_json, reset_run_hours_str,
@@ -1869,7 +1873,7 @@ def add_maintenance():
 @app.route('/maintenance/update', methods=['POST'])
 def update_maintenance():
     """Update an existing maintenance record timestamp"""
-    data = request.json
+    data = request.json or {}
     original_timestamp = data.get('original_timestamp')
     new_timestamp = data.get('new_timestamp')
     
@@ -1911,7 +1915,7 @@ def update_maintenance():
 @app.route('/maintenance/delete', methods=['POST'])
 def delete_maintenance():
     """Delete an existing maintenance record"""
-    data = request.json
+    data = request.json or {}
     timestamp = data.get('timestamp')
     
     if not timestamp:
@@ -2054,12 +2058,16 @@ def register_service():
 @app.route('/<path:path>')
 def catch_all(path):
     """Serve static files or fall back to index.html for SPA routing"""
-    # First check if the requested path exists in the static folder
-    static_path = os.path.join(app.static_folder, path)
-    if os.path.exists(static_path) and os.path.isfile(static_path):
+    static_folder_abs = os.path.abspath(app.static_folder)
+    requested_path = os.path.abspath(os.path.normpath(os.path.join(app.static_folder, path)))
+    # Prevent path traversal: ensure requested path is within static folder
+    try:
+        if os.path.commonpath([static_folder_abs, requested_path]) != static_folder_abs:
+            return send_from_directory(app.static_folder, 'index.html')
+    except ValueError:
+        return send_from_directory(app.static_folder, 'index.html')
+    if os.path.exists(requested_path) and os.path.isfile(requested_path):
         return send_from_directory(app.static_folder, path)
-    
-    # Otherwise, serve index.html for SPA routing
     return send_from_directory(app.static_folder, 'index.html')
 
 @app.route('/clear_history', methods=['POST'])
