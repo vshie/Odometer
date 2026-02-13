@@ -562,6 +562,47 @@ class OdometerService:
         high_duty = max_dev > 300
         return rapid_discharge or high_duty
     
+    def delete_mission(self, start_time: str) -> bool:
+        """Delete a mission by start_time. Returns True if found and deleted."""
+        with self.stats_lock:
+            original = len(self.missions)
+            self.missions = [m for m in self.missions if m.get('start_time') != start_time]
+            if len(self.missions) == original:
+                return False
+            self._rewrite_missions_csv()
+        return True
+
+    def clear_missions(self) -> None:
+        """Clear all completed missions. Does not affect current_mission."""
+        with self.stats_lock:
+            self.missions = []
+            self._rewrite_missions_csv()
+        logger.info("Cleared all completed missions")
+
+    def _rewrite_missions_csv(self) -> None:
+        """Rewrite MISSIONS_CSV with current missions list."""
+        headers = ['start_time', 'end_time', 'start_voltage', 'end_voltage',
+                   'start_cpu_temp', 'end_cpu_temp', 'total_ah', 'start_uptime', 'end_uptime',
+                   'voltage_min', 'max_pwm_deviation', 'hard_use']
+        with open(MISSIONS_CSV, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(headers)
+            for m in self.missions:
+                writer.writerow([
+                    m.get('start_time', ''),
+                    m.get('end_time', ''),
+                    str(m.get('start_voltage', 0)),
+                    str(m.get('end_voltage', 0)),
+                    str(m.get('start_cpu_temp', 0)),
+                    str(m.get('end_cpu_temp', 0)),
+                    str(m.get('total_ah', 0)),
+                    str(m.get('start_uptime', 0)),
+                    str(m.get('end_uptime', 0)),
+                    str(m.get('voltage_min', 0)),
+                    str(m.get('max_pwm_deviation', 0)),
+                    'true' if m.get('hard_use') else 'false'
+                ])
+
     def save_mission(self, mission: dict):
         """Append a single mission to persistent storage"""
         try:
@@ -1834,6 +1875,33 @@ def get_missions():
                 "completed_missions": odometer_service.missions
             }
         })
+
+
+@app.route('/missions/delete', methods=['POST'])
+def delete_mission():
+    """Delete a single completed mission by start_time"""
+    data = request.json or {}
+    start_time = data.get('start_time', '').strip()
+    if not start_time:
+        return jsonify({"status": "error", "message": "start_time is required"}), 400
+    try:
+        if not odometer_service.delete_mission(start_time):
+            return jsonify({"status": "error", "message": "Mission not found"}), 404
+        return jsonify({"status": "success", "message": "Mission deleted"})
+    except Exception as e:
+        logger.error(f"Error deleting mission: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/missions/clear', methods=['POST'])
+def clear_missions():
+    """Clear all completed missions (usage history). Does not affect current session."""
+    try:
+        odometer_service.clear_missions()
+        return jsonify({"status": "success", "message": "Usage history cleared"})
+    except Exception as e:
+        logger.error(f"Error clearing missions: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.route('/thrusters')

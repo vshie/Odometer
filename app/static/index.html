@@ -309,6 +309,15 @@
                                                 Hard use
                                             </v-chip>
                                         </template>
+                                        <template v-slot:item.actions="{ item }">
+                                            <v-icon
+                                                v-if="!item.isCurrent"
+                                                x-small
+                                                color="error"
+                                                style="cursor: pointer"
+                                                @click="deleteUsageRow(item)"
+                                            >mdi-delete</v-icon>
+                                        </template>
                                     </v-data-table>
                                 </v-card-text>
                             </v-card>
@@ -609,16 +618,16 @@
                         </v-card>
                     </v-dialog>
 
-                    <!-- Clear Data Confirmation Dialog -->
+                    <!-- Clear Usage History Confirmation Dialog -->
                     <v-dialog v-model="clearDialog.show" max-width="500px">
                         <v-card>
                             <v-card-title class="error white--text">
-                                <span>Clear Temperature & Voltage History</span>
+                                <span>Clear Usage History</span>
                             </v-card-title>
                             <v-card-text class="pt-4">
                                 <p class="text-body-1">
                                     <v-icon color="warning" class="mr-2">mdi-alert</v-icon>
-                                    This will remove all historical temperature and voltage data, but will preserve uptime statistics.
+                                    This will remove all completed usage sessions from the history. The current active session will be preserved.
                                 </p>
                                 <p class="text-body-1 mt-2">
                                     Are you sure you want to continue?
@@ -634,7 +643,7 @@
                                     type="warning"
                                     class="mt-4"
                                 >
-                                    This is your final confirmation. All temperature and voltage history will be permanently deleted.
+                                    This is your final confirmation. All completed usage sessions will be permanently deleted.
                                 </v-alert>
                             </v-card-text>
                             <v-card-actions>
@@ -651,8 +660,27 @@
                                     v-if="clearDialog.step === 2"
                                     color="error" 
                                     text 
-                                    @click="clearTempVoltageHistory"
-                                >Confirm Delete</v-btn>
+                                    @click="clearUsageHistory"
+                                >Confirm Clear All</v-btn>
+                            </v-card-actions>
+                        </v-card>
+                    </v-dialog>
+
+                    <!-- Delete single usage row confirmation -->
+                    <v-dialog v-model="deleteUsageDialog.show" max-width="400px">
+                        <v-card>
+                            <v-card-title class="error white--text">
+                                <span>Delete Usage Session</span>
+                            </v-card-title>
+                            <v-card-text class="pt-4">
+                                <p v-if="deleteUsageDialog.item">
+                                    Delete session from {{ formatDateShort(deleteUsageDialog.item.start_time) }} to {{ formatDateShort(deleteUsageDialog.item.end_time) }}?
+                                </p>
+                            </v-card-text>
+                            <v-card-actions>
+                                <v-spacer></v-spacer>
+                                <v-btn color="blue-grey darken-1" text @click="deleteUsageDialog.show = false">Cancel</v-btn>
+                                <v-btn color="error" text @click="confirmDeleteUsageRow">Delete</v-btn>
                             </v-card-actions>
                         </v-card>
                     </v-dialog>
@@ -742,6 +770,10 @@
                         show: false,
                         step: 1,
                         confirmed: false
+                    },
+                    deleteUsageDialog: {
+                        show: false,
+                        item: null
                     },
                     deleteDialog: {
                         show: false,
@@ -851,7 +883,8 @@
                         { text: 'Start V', value: 'start_voltage' },
                         { text: 'End V', value: 'end_voltage' },
                         { text: 'Ah', value: 'total_ah' },
-                        { text: 'Status', value: 'status' }
+                        { text: 'Status', value: 'status' },
+                        { text: '', value: 'actions', sortable: false, align: 'end' }
                     ],
                     usage: [],
                     currentUsage: null,
@@ -1671,23 +1704,49 @@
                     this.clearDialog.show = false;
                     this.resetClearDialog();
                 },
-                clearTempVoltageHistory() {
-                    axios.post('/clear_history')
+                clearUsageHistory() {
+                    axios.post('/missions/clear')
                         .then(response => {
                             if (response.data.status === 'success') {
-                                this.showSnackbar('Temperature and voltage history cleared successfully');
-                                this.fetchHistoricalData();
+                                this.showSnackbar('Usage history cleared successfully');
+                                this.fetchUsage();
                             } else {
-                                this.showSnackbar(response.data.message || 'Failed to clear temperature and voltage history', 'error');
+                                this.showSnackbar(response.data.message || 'Failed to clear usage history', 'error');
                             }
                         })
                         .catch(error => {
-                            console.error('Error clearing temperature and voltage history:', error);
-                            this.showSnackbar('Failed to clear temperature and voltage history', 'error');
+                            console.error('Error clearing usage history:', error);
+                            this.showSnackbar('Failed to clear usage history', 'error');
                         })
                         .finally(() => {
                             this.clearDialog.show = false;
                             this.resetClearDialog();
+                        });
+                },
+                deleteUsageRow(item) {
+                    if (item.isCurrent) return;
+                    this.deleteUsageDialog.item = item;
+                    this.deleteUsageDialog.show = true;
+                },
+                confirmDeleteUsageRow() {
+                    const item = this.deleteUsageDialog.item;
+                    if (!item || item.isCurrent) return;
+                    axios.post('/missions/delete', { start_time: item.start_time })
+                        .then(response => {
+                            if (response.data.status === 'success') {
+                                this.showSnackbar('Usage session deleted');
+                                this.fetchUsage();
+                            } else {
+                                this.showSnackbar(response.data.message || 'Failed to delete session', 'error');
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Error deleting usage session:', error);
+                            this.showSnackbar('Failed to delete session', 'error');
+                        })
+                        .finally(() => {
+                            this.deleteUsageDialog.show = false;
+                            this.deleteUsageDialog.item = null;
                         });
                 },
                 resetClearDialog() {
