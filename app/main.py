@@ -5,6 +5,7 @@ import csv
 import time
 import json
 import datetime
+from datetime import timezone
 import logging
 import logging.handlers
 import threading
@@ -443,6 +444,7 @@ class OdometerService:
         """
         Return layout config for position grids. ROVs: vertical + horizontal tables.
         Boats: 2x1 (port, starboard). Layout is list of grids; each grid is list of rows.
+        Convention: odd thrusters (1,3,5,7) on starboard (right), even (2,4,6,8) on port (left).
         """
         is_rov = mav_type == MAV_TYPE_SUBMARINE
         is_boat = mav_type in (MAV_TYPE_GROUND_ROVER, MAV_TYPE_SURFACE_BOAT)
@@ -452,7 +454,7 @@ class OdometerService:
                 'unit': 'motor',
                 'unit_plural': 'motors',
                 'grids': [
-                    {'label': 'Port / Starboard', 'rows': [[1, 2]]}  # 2x1
+                    {'label': 'Port / Starboard', 'rows': [[2, 1]]}  # Motor 1=starboard, Motor 2=port
                 ]
             }
         if is_rov:
@@ -461,7 +463,7 @@ class OdometerService:
                     'unit': 'thruster',
                     'unit_plural': 'thrusters',
                     'grids': [
-                        {'label': 'Horizontal', 'rows': [[1, 2], [3, 4]]}  # 2x2
+                        {'label': 'Horizontal', 'rows': [[2, 1], [4, 3]]}  # Port|Starboard per row
                     ]
                 }
             if thruster_count == 5:
@@ -469,7 +471,7 @@ class OdometerService:
                     'unit': 'thruster',
                     'unit_plural': 'thrusters',
                     'grids': [
-                        {'label': 'Horizontal', 'rows': [[1, 2], [3, 4]]},
+                        {'label': 'Horizontal', 'rows': [[2, 1], [4, 3]]},
                         {'label': 'Vertical', 'rows': [[5]]}
                     ]
                 }
@@ -478,8 +480,8 @@ class OdometerService:
                     'unit': 'thruster',
                     'unit_plural': 'thrusters',
                     'grids': [
-                        {'label': 'Horizontal', 'rows': [[1, 2], [3, 4]]},  # 2x2
-                        {'label': 'Vertical', 'rows': [[5, 6]]}  # 2x1
+                        {'label': 'Horizontal', 'rows': [[2, 1], [4, 3]]},
+                        {'label': 'Vertical', 'rows': [[6, 5]]}  # Port|Starboard
                     ]
                 }
             if thruster_count == 8:
@@ -487,8 +489,8 @@ class OdometerService:
                     'unit': 'thruster',
                     'unit_plural': 'thrusters',
                     'grids': [
-                        {'label': 'Vertical', 'rows': [[1, 2], [3, 4]]},  # 2x2
-                        {'label': 'Horizontal', 'rows': [[5, 6], [7, 8]]}  # 2x2
+                        {'label': 'Vertical', 'rows': [[2, 1], [4, 3]]},
+                        {'label': 'Horizontal', 'rows': [[6, 5], [8, 7]]}
                     ]
                 }
             # Default for 3 or other ROV counts
@@ -1128,17 +1130,17 @@ class OdometerService:
             logger.error(f"Error updating stats: {e}")
     
     def get_local_time(self) -> datetime.datetime:
-        """Get the local time from the system-information endpoint"""
+        """Get the local time from the system-information endpoint. Returns timezone-aware UTC."""
         try:
             response = requests.get('http://host.docker.internal/system-information/system/unix_time_seconds', timeout=2)
             if response.status_code == 200:
                 unix_time = float(response.text)
-                return datetime.datetime.fromtimestamp(unix_time)
+                return datetime.datetime.fromtimestamp(unix_time, tz=timezone.utc)
         except Exception as e:
             logger.warning(f"Failed to get local time from system-information endpoint: {e}")
         
         # Fallback to system time if endpoint is not available
-        return datetime.datetime.now()
+        return datetime.datetime.now(timezone.utc)
 
     def write_stats_to_csv(self, time_status="normal", startup_detected=False):
         """Write the current stats to the CSV file.

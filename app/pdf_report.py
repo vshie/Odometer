@@ -1,7 +1,7 @@
 """Generate PDF report for Odometer data."""
 import io
+import html
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from reportlab.lib import colors
@@ -101,13 +101,37 @@ def generate_report(
     story.append(t)
     story.append(Spacer(1, 12))
 
-    # Current mission
+    # Usage sessions (all missions with max PWM)
+    all_sessions = []
     if current_mission and current_mission.get("start_time"):
-        story.append(Paragraph("Current Session", heading_style))
-        cm = current_mission
-        story.append(Paragraph(f"Started: {_fmt_iso(cm.get('start_time'))}", styles["Normal"]))
-        story.append(Paragraph(f"Voltage: {cm.get('start_voltage', 0):.1f}V → {cm.get('end_voltage', 0):.1f}V", styles["Normal"]))
-        story.append(Paragraph(f"Ah: {cm.get('total_ah', 0):.2f}", styles["Normal"]))
+        cm = {**current_mission, "status": "Active", "hard_use": False}
+        all_sessions.append(cm)
+    all_sessions.extend([{**m, "status": "Done"} for m in missions])
+    if all_sessions:
+        story.append(Paragraph("Usage Sessions", heading_style))
+        rows = [["Start", "End", "Start V", "End V", "Ah", "Max PWM (us)", "Hard use"]]
+        for s in all_sessions:
+            start_iso = s.get("start_time")
+            end_iso = s.get("end_time")
+            if s.get("status") == "Active":
+                end_disp = "Now"
+            else:
+                end_disp = _fmt_iso(end_iso)
+            rows.append([
+                _fmt_iso(start_iso),
+                end_disp,
+                f"{s.get('start_voltage', 0):.1f}",
+                f"{s.get('end_voltage', 0):.1f}",
+                f"{s.get('total_ah', 0):.2f}",
+                f"{s.get('max_pwm_deviation', 0):.0f}",
+                "Yes" if s.get("hard_use") else "-",
+            ])
+        t = Table(rows, colWidths=[1.2 * inch, 1.2 * inch, 0.7 * inch, 0.7 * inch, 0.6 * inch, 1.0 * inch, 0.7 * inch])
+        t.setStyle(TableStyle([
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+        ]))
+        story.append(t)
         story.append(Spacer(1, 8))
 
     # Hard-use highlights
@@ -167,15 +191,18 @@ def generate_report(
     if maintenance:
         rows = [["Date", "Event", "Details"]]
         for rec in maintenance[-20:]:
+            details = rec.get("details", "") or ""
+            details_escaped = html.escape(details).replace("\n", "<br/>")
             rows.append([
                 _fmt_iso(rec.get("timestamp", "")),
                 rec.get("event_type", ""),
-                (rec.get("details", "") or "")[:50] + ("..." if len(rec.get("details", "") or "") > 50 else ""),
+                Paragraph(details_escaped, ParagraphStyle("Details", parent=styles["Normal"], fontSize=9)),
             ])
-        t = Table(rows, colWidths=[1.5 * inch, 1.2 * inch, 2.8 * inch])
+        t = Table(rows, colWidths=[1.4 * inch, 1.1 * inch, 3.5 * inch])
         t.setStyle(TableStyle([
             ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
             ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ]))
         story.append(t)
     else:
