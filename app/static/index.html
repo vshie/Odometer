@@ -342,7 +342,7 @@
                                             {{ item.isCurrent ? 'Now' : formatDateShort(item.end_time) }}
                                         </template>
                                         <template v-slot:item.duration="{ item }">
-                                            {{ item.isCurrent ? '-' : calculateDuration(item.start_time, item.end_time) }}
+                                            {{ calculateDuration(item.start_time, item.end_time || new Date().toISOString()) }}
                                         </template>
                                         <template v-slot:item.start_voltage="{ item }">
                                             {{ item.start_voltage.toFixed(1) }}V
@@ -773,8 +773,7 @@
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/moment@2.29.4/moment.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
-    <script src="https://cdn.jsdelivr.net/npm/date-fns@2.29.3/index.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@1.0.1/dist/chartjs-adapter-moment.js"></script>
     <script>
         new Vue({
             el: '#app',
