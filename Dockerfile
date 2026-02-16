@@ -1,6 +1,7 @@
 FROM python:3.11-slim
 
 # Install required dependencies (gcc etc. for building pillow, used by reportlab)
+# Pillow (ReportLab dep) needs these runtime libs - piwheels build includes many format backends
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gcc \
@@ -9,6 +10,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zlib1g-dev \
     libtiff6 \
     libopenjp2-7 \
+    libfreetype6 \
+    liblcms2-2 \
+    libwebp7 \
+    libimagequant0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY app /app
