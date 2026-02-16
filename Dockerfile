@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     liblcms2-2 \
     libwebp7 \
     libimagequant0 \
+    libxcb1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY app /app
