@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libjpeg-dev \
     zlib1g-dev \
     libtiff6 \
+    libopenjp2-7 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY app /app
