@@ -184,9 +184,9 @@ class OdometerService:
             'mav_type': -1,
             'thrusters': []  # [{'run_minutes': 0, 'avg_pwm_sum': 0, 'avg_pwm_count': 0}, ...]
         }
-        self.thruster_lock = threading.Lock()
+        self.thruster_lock = threading.RLock()
         self.accessories = {}  # {id: {'name': str, 'channel': int, 'run_minutes': int, 'avg_pwm_sum': float, 'avg_pwm_count': int}}
-        self.accessory_lock = threading.Lock()
+        self.accessory_lock = threading.RLock()
         self._next_accessory_id = 1
         self.last_update_time = time.time()
         self.minutes_since_update = 0
