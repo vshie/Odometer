@@ -338,8 +338,8 @@
                                         <template v-slot:item.end_voltage="{ item }">
                                             {{ item.isCurrent ? stats.last_voltage.toFixed(1) : item.end_voltage.toFixed(1) }}V
                                         </template>
-                                        <template v-slot:item.total_ah="{ item }">
-                                            {{ item.isCurrent ? (stats.last_voltage > 0 ? (stats.current_battery_wh / stats.last_voltage).toFixed(2) : '-') : item.total_ah.toFixed(2) }}Ah
+                                        <template v-slot:item.wh="{ item }">
+                                            {{ computeSessionWh(item) }}
                                         </template>
                                         <template v-slot:item.distance_m="{ item }">
                                             {{ formatDistance(item.distance_m || 0) }}
@@ -943,7 +943,7 @@
                         { text: 'Duration', value: 'duration' },
                         { text: 'Start V', value: 'start_voltage' },
                         { text: 'End V', value: 'end_voltage' },
-                        { text: 'Ah', value: 'total_ah' },
+                        { text: 'Wh', value: 'wh' },
                         { text: 'Dist', value: 'distance_m' },
                         { text: 'Max A', value: 'max_current_a' },
                         { text: 'Max m/s', value: 'max_speed' },
@@ -1099,6 +1099,18 @@
                 }
             },
             methods: {
+                computeSessionWh(item) {
+                    var ah, avgV;
+                    if (item.isCurrent) {
+                        ah = item.total_ah || 0;
+                        avgV = (item.start_voltage + this.stats.last_voltage) / 2;
+                    } else {
+                        ah = item.total_ah || 0;
+                        avgV = (item.start_voltage + item.end_voltage) / 2;
+                    }
+                    if (ah <= 0 || avgV <= 0) return '-';
+                    return (ah * avgV).toFixed(1) + ' Wh';
+                },
                 setupThemeDetection() {
                     // First try to detect BlueOS theme through parent window
                     const detected = this.checkBlueOSTheme();
