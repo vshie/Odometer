@@ -218,9 +218,9 @@
                                     </v-col>
                                     <v-col cols="12" class="stat-item pt-0" v-if="Object.keys(stats.mode_minutes || {}).length > 0">
                                         <div class="caption mb-1" style="opacity: 0.8;">Flight modes</div>
-                                        <div class="d-flex flex-wrap" style="gap: 4px;">
-                                            <v-chip v-for="(mins, mode) in stats.mode_minutes" :key="mode" x-small outlined class="ma-0">
-                                                {{ mode }}: {{ formatTimeCompact(mins) }}
+                                        <div class="d-flex flex-wrap" style="gap: 6px;">
+                                            <v-chip v-for="(mins, mode) in stats.mode_minutes" :key="mode" small outlined class="ma-0" style="font-size: 0.85rem;">
+                                                <strong>{{ mode }}</strong>&nbsp;{{ formatTimeCompact(mins) }}
                                             </v-chip>
                                         </div>
                                     </v-col>
