@@ -154,19 +154,10 @@
         <v-app :theme="isDarkMode ? 'dark' : 'light'">
             <v-main>
                     <v-container fluid class="pa-3 mobile-container">
-                    <!-- Vehicle name (editable) -->
-                    <v-row dense>
+                    <!-- Vehicle name (from BlueOS) -->
+                    <v-row dense v-if="vehicleName">
                         <v-col cols="12" class="d-flex align-center">
-                            <v-text-field
-                                v-model="vehicleName"
-                                label="Vehicle name"
-                                dense
-                                hide-details
-                                outlined
-                                class="vehicle-name-field"
-                                style="max-width: 300px;"
-                                @blur="saveVehicleName"
-                            ></v-text-field>
+                            <span class="title font-weight-medium" style="opacity: 0.85;">{{ vehicleName }}</span>
                         </v-col>
                     </v-row>
                     <!-- Header: Stats + Logo/Armed Bar -->
@@ -1254,32 +1245,10 @@
                     }
                 },
                 fetchVehicle() {
-                    axios.get('/vehicle')
-                        .then(response => {
-                            if (response.data.status === 'success') {
-                                this.vehicleName = response.data.data.name || '';
-                                if (!this.vehicleName) {
-                                    this.fetchBlueOSVehicleName();
-                                }
-                            }
-                        })
-                        .catch(() => {});
-                },
-                fetchBlueOSVehicleName() {
                     axios.get('/blueos_vehicle_name')
                         .then(response => {
                             if (response.data.status === 'success' && response.data.name) {
                                 this.vehicleName = response.data.name;
-                                this.saveVehicleName();
-                            }
-                        })
-                        .catch(() => {});
-                },
-                saveVehicleName() {
-                    axios.post('/vehicle', { name: this.vehicleName })
-                        .then(response => {
-                            if (response.data.status === 'success') {
-                                this.showSnackbar('Vehicle name saved');
                             }
                         })
                         .catch(() => {});

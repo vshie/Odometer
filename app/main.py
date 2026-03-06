@@ -507,13 +507,11 @@ class OdometerService:
             logger.error(f"Error saving vehicle: {e}")
     
     def _auto_populate_vehicle_name(self) -> None:
-        """On startup, if local vehicle name is empty, try to fetch from BlueOS."""
-        local = self.load_vehicle()
-        if not local.get('name', '').strip():
-            name = self.get_blueos_vehicle_name()
-            if name:
-                self.save_vehicle({'name': name})
-                logger.info(f"Auto-populated vehicle name from BlueOS: {name}")
+        """On startup, sync vehicle name from BlueOS beacon to local storage."""
+        name = self.get_blueos_vehicle_name()
+        if name:
+            self.save_vehicle({'name': name})
+            logger.info(f"Synced vehicle name from BlueOS: {name}")
 
     def get_blueos_vehicle_name(self) -> str:
         """Fetch vehicle name from the BlueOS Beacon service. Returns name or empty string."""
