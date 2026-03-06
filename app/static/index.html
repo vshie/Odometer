@@ -203,7 +203,7 @@
                                     </v-col>
                                     <v-col cols="6" sm="3" class="stat-item">
                                         <v-icon class="stat-icon" color="blue-grey">mdi-sigma</v-icon>
-                                        <div class="stat-value blue-grey--text">{{ stats.total_wh_consumed.toFixed(1) }} Wh</div>
+                                        <div class="stat-value blue-grey--text">{{ lifetimeWh.toFixed(1) }} Wh</div>
                                         <div class="stat-label">Lifetime Energy</div>
                                     </v-col>
                                     <v-col cols="6" sm="3" class="stat-item" v-if="(stats.total_distance_m || 0) > 0">
@@ -1042,6 +1042,23 @@
                     const total = armed + disarmed;
                     if (total <= 0) return 0;
                     return (disarmed / total) * 100;
+                },
+                lifetimeWh() {
+                    var total = 0;
+                    for (var i = 0; i < this.allUsage.length; i++) {
+                        var item = this.allUsage[i];
+                        var ah = item.total_ah || 0;
+                        var avgV;
+                        if (item.isCurrent) {
+                            avgV = (item.start_voltage + this.stats.last_voltage) / 2;
+                        } else {
+                            avgV = (item.start_voltage + item.end_voltage) / 2;
+                        }
+                        if (ah > 0 && avgV > 0) {
+                            total += ah * avgV;
+                        }
+                    }
+                    return total;
                 },
                 thrusterOptions() {
                     const unit = (this.thrusterData.layout && this.thrusterData.layout.unit) || 'thruster';
