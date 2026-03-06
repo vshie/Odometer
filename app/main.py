@@ -1232,8 +1232,8 @@ class OdometerService:
                     avg_voltage = self.stats['voltage_sum'] / self.stats['voltage_count']
                     
                     # Calculate watt-hours for this update
-                    # current_consumed is in mAh, convert to Ah and multiply by voltage to get Wh
-                    wh_consumed = (abs(current_consumed) / 1000.0) * avg_voltage
+                    # current_consumed is in cAh (0.01 Ah), convert to Ah and multiply by voltage to get Wh
+                    wh_consumed = (abs(current_consumed) / 100.0) * avg_voltage
                     
                     # Check for battery swap (current_consumed reset and voltage increase)
                     # Battery swap is detected when:
@@ -1307,7 +1307,7 @@ class OdometerService:
                         avg_voltage = current_voltage
                         
                         # Recalculate wh_consumed for the new battery (should be near zero)
-                        wh_consumed = (abs(current_consumed) / 1000.0) * avg_voltage
+                        wh_consumed = (abs(current_consumed) / 100.0) * avg_voltage
                     
                     # Update current battery watt-hours (energy consumed from current battery)
                     self.stats['current_battery_wh'] = wh_consumed
@@ -1341,7 +1341,7 @@ class OdometerService:
                     self.stats['current_mission']['end_voltage'] = current_voltage
                     if current_cpu_temp > 0:
                         self.stats['current_mission']['end_cpu_temp'] = current_cpu_temp
-                    self.stats['current_mission']['total_ah'] = abs(current_consumed) / 1000.0  # Convert mAh to Ah
+                    self.stats['current_mission']['total_ah'] = abs(current_consumed) / 100.0
                     self.stats['current_mission']['end_uptime'] = self.stats['total_minutes']
                     # Track session voltage min for hard-use detection
                     vmin = self.stats['current_mission'].get('voltage_min', 0) or 0
