@@ -71,6 +71,7 @@ WEBSOCKET_PORT = 8765  # Port for Cockpit data lake streaming
 WEBSOCKET_UPDATE_INTERVAL = 1.0  # Seconds between WebSocket updates
 DIVE_DEPTH_THRESHOLD = 1.0  # Depth threshold in meters to count as diving
 BATTERY_SWAP_VOLTAGE_THRESHOLD = 1.0  # Voltage increase (V) to detect battery swap on reconnect
+MAX_PLAUSIBLE_SPEED_MS = 15.0  # Speed cap (m/s) to filter GPS glitches
 
 # ArduSub flight mode numbers (custom_mode) -> display name
 ARDUSUB_MODES = {
@@ -196,6 +197,7 @@ class OdometerService:
         self.load_missions()
         self.load_thruster_stats()
         self.load_accessories()
+        self._auto_populate_vehicle_name()
         self.close_previous_session_on_startup()
         self.detect_startup()
         
@@ -504,6 +506,35 @@ class OdometerService:
         except Exception as e:
             logger.error(f"Error saving vehicle: {e}")
     
+    def _auto_populate_vehicle_name(self) -> None:
+        """On startup, if local vehicle name is empty, try to fetch from BlueOS."""
+        local = self.load_vehicle()
+        if not local.get('name', '').strip():
+            name = self.get_blueos_vehicle_name()
+            if name:
+                self.save_vehicle({'name': name})
+                logger.info(f"Auto-populated vehicle name from BlueOS: {name}")
+
+    def get_blueos_vehicle_name(self) -> str:
+        """Fetch vehicle name from the BlueOS Beacon service. Returns name or empty string."""
+        beacon_hosts = [
+            'http://host.docker.internal',
+            'http://192.168.2.2',
+            'http://localhost',
+            'http://blueos.local',
+        ]
+        for host in beacon_hosts:
+            try:
+                resp = requests.get(f"{host}/beacon/v1.0/vehicle_name", timeout=2)
+                if resp.status_code == 200:
+                    name = resp.text.strip().strip('"')
+                    if name:
+                        logger.info(f"Got vehicle name from BlueOS beacon ({host}): {name}")
+                        return name
+            except Exception:
+                continue
+        return ''
+
     def load_accessories(self) -> None:
         """Load accessories from JSON file"""
         if ACCESSORIES_FILE.exists():
@@ -561,7 +592,7 @@ class OdometerService:
                 'unit': 'motor',
                 'unit_plural': 'motors',
                 'grids': [
-                    {'label': 'Port / Starboard', 'rows': [[2, 1]]}  # Motor 1=starboard, Motor 2=port
+                    {'label': 'Port / Starboard', 'rows': [[2, 1]], 'names': {2: 'Port', 1: 'Starboard'}}
                 ]
             }
         if is_rov:
@@ -1454,7 +1485,7 @@ class OdometerService:
                     vx = int(msg.get('vx', 0) or 0)  # cm/s
                     vy = int(msg.get('vy', 0) or 0)  # cm/s
                     speed_cm_s = math.sqrt(vx * vx + vy * vy)
-                    return speed_cm_s / 100.0  # m/s
+                    return min(speed_cm_s / 100.0, MAX_PLAUSIBLE_SPEED_MS)
             except Exception:
                 continue
         try:
@@ -1465,7 +1496,7 @@ class OdometerService:
                     data = resp.json()
                     msg = data.get('message', data)
                     vel = int(msg.get('vel', 0) or 0)  # cm/s
-                    return vel / 100.0  # m/s
+                    return min(vel / 100.0, MAX_PLAUSIBLE_SPEED_MS)
         except Exception:
             pass
         return 0.0
@@ -1609,7 +1640,7 @@ class OdometerService:
                         # Convert to positive depth (negative altitude = positive depth)
                         depth = -alt if alt < 0 else 0.0
                         logger.info(f"VFR_HUD alt: {alt}m, depth: {depth}m")
-                        groundspeed = abs(float(vfr_hud.get("groundspeed", 0.0)))
+                        groundspeed = min(abs(float(vfr_hud.get("groundspeed", 0.0))), MAX_PLAUSIBLE_SPEED_MS)
                     
                     logger.info(f"Successfully got vehicle status from {endpoint}: voltage={voltage}V, armed={is_armed}, current_consumed={current_consumed}mAh, depth={depth}m, mav_type={mav_type}")
                     return voltage, is_armed, current_consumed, depth, mav_type, custom_mode, current_battery_a, groundspeed
@@ -1723,6 +1754,12 @@ def post_vehicle():
     name = data.get('name', '').strip()
     odometer_service.save_vehicle({'name': name})
     return jsonify({"status": "success", "message": "Vehicle name updated"})
+
+@app.route('/blueos_vehicle_name')
+def get_blueos_vehicle_name():
+    """Fetch vehicle name from the BlueOS Beacon service"""
+    name = odometer_service.get_blueos_vehicle_name()
+    return jsonify({"status": "success", "name": name})
 
 @app.route('/accessories')
 def get_accessories():
