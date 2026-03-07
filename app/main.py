@@ -164,6 +164,8 @@ class OdometerService:
                 'start_cpu_temp': 0.0,
                 'end_voltage': 0.0,
                 'end_cpu_temp': 0.0,
+                'min_cpu_temp': 0.0,
+                'max_cpu_temp': 0.0,
                 'total_ah': 0.0,
                 'start_uptime': 0,
                 'end_uptime': 0,
@@ -1283,6 +1285,8 @@ class OdometerService:
                             'start_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
                             'end_voltage': current_voltage,
                             'end_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
+                            'min_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
+                            'max_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
                             'total_ah': 0.0,
                             'start_uptime': self.stats['total_minutes'],
                             'end_uptime': self.stats['total_minutes'],
@@ -1323,6 +1327,8 @@ class OdometerService:
                             'start_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
                             'end_voltage': current_voltage,
                             'end_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
+                            'min_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
+                            'max_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
                             'total_ah': 0.0,
                             'start_uptime': self.stats['total_minutes'],
                             'end_uptime': self.stats['total_minutes'],
@@ -1341,6 +1347,12 @@ class OdometerService:
                     self.stats['current_mission']['end_voltage'] = current_voltage
                     if current_cpu_temp > 0:
                         self.stats['current_mission']['end_cpu_temp'] = current_cpu_temp
+                        cur_min = self.stats['current_mission'].get('min_cpu_temp', 0)
+                        cur_max = self.stats['current_mission'].get('max_cpu_temp', 0)
+                        if cur_min <= 0 or current_cpu_temp < cur_min:
+                            self.stats['current_mission']['min_cpu_temp'] = current_cpu_temp
+                        if current_cpu_temp > cur_max:
+                            self.stats['current_mission']['max_cpu_temp'] = current_cpu_temp
                     self.stats['current_mission']['total_ah'] = abs(current_consumed) / 100.0
                     self.stats['current_mission']['end_uptime'] = self.stats['total_minutes']
                     # Track session voltage min for hard-use detection
@@ -1363,6 +1375,8 @@ class OdometerService:
                             'start_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
                             'end_voltage': 0.0,
                             'end_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
+                            'min_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
+                            'max_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
                             'total_ah': 0.0,
                             'start_uptime': self.stats['total_minutes'],
                             'end_uptime': self.stats['total_minutes'],
@@ -1377,7 +1391,14 @@ class OdometerService:
                             'speed_count': 0
                         }
                     else:
-                        self.stats['current_mission']['end_cpu_temp'] = current_cpu_temp if current_cpu_temp > 0 else self.stats['current_mission']['end_cpu_temp']
+                        if current_cpu_temp > 0:
+                            self.stats['current_mission']['end_cpu_temp'] = current_cpu_temp
+                            cur_min = self.stats['current_mission'].get('min_cpu_temp', 0)
+                            cur_max = self.stats['current_mission'].get('max_cpu_temp', 0)
+                            if cur_min <= 0 or current_cpu_temp < cur_min:
+                                self.stats['current_mission']['min_cpu_temp'] = current_cpu_temp
+                            if current_cpu_temp > cur_max:
+                                self.stats['current_mission']['max_cpu_temp'] = current_cpu_temp
                         self.stats['current_mission']['end_uptime'] = self.stats['total_minutes']
                 
                 # Update CPU temperature if valid
