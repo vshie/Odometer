@@ -16,17 +16,16 @@ The BlueOS Odometer Extension tracks your vehicle's usage stats and maintenance 
 
 Once launched in the Extensions Manager, install this extension directly from the Extensions page in your BlueOS web interface.
 
-### Manual Install (Beta)
+## Manual Install
 
-While the extension is in beta and not yet published to the official Extensions list, you can install it manually from the BlueOS Extensions Manager:
+To install Odometer manually from the BlueOS Extension Manager, choose **Install from Scratch** from the + icon in the lower right of the Installed Extensions page and use:
 
-1. Open BlueOS and go to **Extensions → Installed → + (Install)**.
-2. Switch to the **Manual** tab and fill in:
-   - **Extension Identifier:** `vshie.odometer`
-   - **Extension Name:** `Odometer`
-   - **Docker image:** `vshie/blueos-blueos-odometer`
-   - **Docker tag:** `beta`
-3. Paste the following into the **Custom settings / Permissions** field:
+```text
+Image: vshie/blueos-blueos-odometer
+Tag: beta
+```
+
+Copy and paste this permissions JSON when BlueOS asks for extension permissions:
 
 ```json
 {
@@ -43,17 +42,22 @@ While the extension is in beta and not yet published to the official Extensions 
     ],
     "ExtraHosts": ["host.docker.internal:host-gateway"],
     "PortBindings": {
-      "80/tcp": [{ "HostPort": "" }],
-      "8765/tcp": [{ "HostPort": "" }]
+      "80/tcp": [
+        {
+          "HostPort": ""
+        }
+      ],
+      "8765/tcp": [
+        {
+          "HostPort": ""
+        }
+      ]
     }
   }
 }
 ```
 
-4. Click **Create** to pull the image and start the extension.
-
-These permissions expose the web UI on port `80/tcp` and the websocket on `8765/tcp`, persist data and logs under `/usr/blueos/extensions/odometer/` on the host, and allow the container to reach the host via `host.docker.internal`.
-
+The other fields don't matter, make them something logical!
 
 ## How It Works
 
