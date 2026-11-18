@@ -66,9 +66,15 @@ The other fields don't matter, make them something logical!
 The Odometer polls the Mavlink2Rest API once per minute to:
 
 1. Increment the total uptime counter
-2. Check armed status and increment the relevant counter (armed or disarmed)
+2. Check armed status and increment the relevant counter (armed or disarmed). If the autopilot stops sending HEARTBEAT for more than 10 seconds, the vehicle is treated as offline (not armed), since Mavlink2Rest keeps serving its last cached message
 3. Monitor battery voltage and detect battery swaps (when voltage increases by > 1V)
 4. Record all this data to a persistent CSV file
+
+A startup is counted when the vehicle has rebooted (detected from the kernel boot ID), not when only the extension restarts. Dive time is only counted for ArduSub vehicles.
+
+### Energy
+
+Each power-on block (or hot battery swap) is a session. Session energy comes from the autopilot's `BATTERY_STATUS.energy_consumed` (falling back to `current_consumed` in mAh x average voltage), measured from the reading when the session started so an extension restart never counts the same energy twice. Lifetime energy is the sum of all closed sessions plus the current one.
 
 ### Per-Thruster / Per-Motor Tracking
 
@@ -77,7 +83,11 @@ The extension detects vehicle type from the MAVLink HEARTBEAT message and tracks
 - **ArduSub** (ROV): 4–8 thrusters (default 8)
 - **BlueBoat/ArduRover** (boat with skid steer): 2 motors
 
-When armed, each thruster/motor's run minutes are incremented. PWM values are sampled every 5 seconds for duty-cycle averaging. The UI shows position grids to correlate numbers with physical layout (e.g. vertical vs horizontal thrusters for ROVs, port/starboard for boats).
+Thrusters are mapped to output channels from the autopilot's `SERVOn_FUNCTION` parameters (Motor1-8 for ArduSub, ThrottleLeft/ThrottleRight for boats), so a 6-thruster BlueROV2 shows 6 thrusters. Until the parameters can be read, ArduSub defaults to 8 thrusters and boats to 2 on channels 1..N.
+
+Output PWM is sampled every 5 seconds. A thruster's run time only accrues while the vehicle is armed and that thruster's output is more than 25 us from neutral (1500 us), so each thruster's hours reflect when it actually ran. The "hard use" session flag only looks at thruster channels, so lights or a gripper don't trigger it. The UI shows position grids to correlate numbers with physical layout (e.g. vertical vs horizontal thrusters for ROVs, port/starboard for boats).
+
+Accessories (added via **Add Device**) accrue run time whenever their output differs from their configured **Off PWM** (default 1100 us, typical for lights; use 1500 for a gripper).
 
 ### Maintenance Logging
 

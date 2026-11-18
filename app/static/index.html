@@ -422,6 +422,7 @@
                                                 <tr>
                                                     <th>Name</th>
                                                     <th>Ch</th>
+                                                    <th>Off PWM</th>
                                                     <th>Run Time</th>
                                                     <th>Avg PWM</th>
                                                 </tr>
@@ -430,6 +431,7 @@
                                                 <tr v-for="a in accessoriesData" :key="a.id">
                                                     <td>{{ a.name }}</td>
                                                     <td>{{ a.channel }}</td>
+                                                    <td>{{ a.off_pwm }} us</td>
                                                     <td>{{ formatTime(a.run_minutes) }}</td>
                                                     <td>{{ a.avg_pwm_armed ? a.avg_pwm_armed + ' us' : '-' }}</td>
                                                 </tr>
@@ -494,7 +496,7 @@
                                         </v-row>
                                                         <!-- Add Device: name + channel -->
                                         <v-row dense v-if="newRecord.event_type === 'Add Device'">
-                                            <v-col cols="12" sm="6">
+                                            <v-col cols="12" sm="5">
                                                 <v-text-field
                                                     v-model="newRecord.device_name"
                                                     label="Device name"
@@ -503,7 +505,7 @@
                                                     outlined
                                                 ></v-text-field>
                                             </v-col>
-                                            <v-col cols="12" sm="4">
+                                            <v-col cols="6" sm="3">
                                                 <v-select
                                                     v-model="newRecord.device_channel"
                                                     :items="channelOptions"
@@ -512,6 +514,17 @@
                                                     hide-details
                                                     outlined
                                                 ></v-select>
+                                            </v-col>
+                                            <v-col cols="6" sm="4">
+                                                <v-text-field
+                                                    v-model.number="newRecord.device_off_pwm"
+                                                    label="Off PWM (us)"
+                                                    type="number"
+                                                    hint="Run time counts while output differs from this (lights: 1100, gripper: 1500)"
+                                                    persistent-hint
+                                                    dense
+                                                    outlined
+                                                ></v-text-field>
                                             </v-col>
                                         </v-row>
                                         <!-- Thruster/Motor options for Replacement, Repair, Sticking -->
@@ -800,7 +813,8 @@
                         thruster_ids: [],
                         reset_run_hours: false,
                         device_name: '',
-                        device_channel: 1
+                        device_channel: 1,
+                        device_off_pwm: 1100
                     },
                     eventTypesBase: ['Add Device', 'Repair', 'Replacement', 'Maintenance', 'Inspection', 'Note'],
                     validForm: false,
@@ -1046,17 +1060,7 @@
                 lifetimeWh() {
                     var total = 0;
                     for (var i = 0; i < this.allUsage.length; i++) {
-                        var item = this.allUsage[i];
-                        var ah = item.total_ah || 0;
-                        var avgV;
-                        if (item.isCurrent) {
-                            avgV = (item.start_voltage + this.stats.last_voltage) / 2;
-                        } else {
-                            avgV = (item.start_voltage + item.end_voltage) / 2;
-                        }
-                        if (ah > 0 && avgV > 0) {
-                            total += ah * avgV;
-                        }
+                        total += this.sessionWh(this.allUsage[i]);
                     }
                     return total;
                 },
@@ -1131,17 +1135,17 @@
                     if (hi <= 0) hi = lo;
                     return Math.round(lo) + '-' + Math.round(hi) + '°C';
                 },
+                sessionWh(item) {
+                    // Sessions recorded since the energy fix carry Wh from the backend; older ones are estimated
+                    if (item.wh !== undefined && item.wh !== null) return item.wh;
+                    var endV = item.isCurrent ? this.stats.last_voltage : item.end_voltage;
+                    var avgV = ((item.start_voltage || 0) + (endV || 0)) / 2;
+                    var ah = item.total_ah || 0;
+                    return (ah > 0 && avgV > 0) ? ah * avgV : 0;
+                },
                 computeSessionWh(item) {
-                    var ah, avgV;
-                    if (item.isCurrent) {
-                        ah = item.total_ah || 0;
-                        avgV = (item.start_voltage + this.stats.last_voltage) / 2;
-                    } else {
-                        ah = item.total_ah || 0;
-                        avgV = (item.start_voltage + item.end_voltage) / 2;
-                    }
-                    if (ah <= 0 || avgV <= 0) return '-';
-                    return (ah * avgV).toFixed(1) + ' Wh';
+                    var wh = this.sessionWh(item);
+                    return wh > 0 ? wh.toFixed(1) + ' Wh' : '-';
                 },
                 setupThemeDetection() {
                     // First try to detect BlueOS theme through parent window
@@ -1387,6 +1391,7 @@
                     if (this.newRecord.event_type === 'Add Device') {
                         payload.device_name = this.newRecord.device_name;
                         payload.device_channel = this.newRecord.device_channel;
+                        payload.device_off_pwm = this.newRecord.device_off_pwm;
                     }
 
                     axios.post('/maintenance', payload)
@@ -1399,6 +1404,7 @@
                                 this.newRecord.reset_run_hours = false;
                                 this.newRecord.device_name = '';
                                 this.newRecord.device_channel = 1;
+                                this.newRecord.device_off_pwm = 1100;
                                 if (this.$refs.form) this.$refs.form.reset();
                                 this.fetchMaintenanceLog();
                                 this.fetchThrusters();

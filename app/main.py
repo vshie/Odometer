@@ -2,6 +2,7 @@
 
 import math
 import os
+import re
 import csv
 import time
 import json
@@ -13,7 +14,7 @@ import threading
 import asyncio
 import requests
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional
 from flask import Flask, jsonify, request, send_from_directory, send_file
 
 from pdf_report import generate_report
@@ -40,7 +41,9 @@ ODOMETER_CSV = DATA_DIR / 'odometer.csv'
 MAINTENANCE_CSV = DATA_DIR / 'maintenance.csv'
 MISSIONS_CSV = DATA_DIR / 'missions.csv'
 CURRENT_SESSION_FILE = DATA_DIR / 'current_session.json'
-STARTUP_MARKER = DATA_DIR / '.startup_marker'
+STARTUP_MARKER = DATA_DIR / '.startup_marker'  # Legacy (never cleared, so startups stuck at 1); replaced by boot_id
+LAST_BOOT_ID_FILE = DATA_DIR / 'last_boot_id'
+BOOT_ID_PATH = Path('/proc/sys/kernel/random/boot_id')  # Kernel-wide, changes on every host reboot
 THRUSTERS_FILE = DATA_DIR / 'thrusters.json'
 ACCESSORIES_FILE = DATA_DIR / 'accessories.json'
 VEHICLE_FILE = DATA_DIR / 'vehicle.json'
@@ -51,7 +54,13 @@ DISTANCE_SAMPLE_INTERVAL = 1  # Poll at 1 Hz when armed for distance tracking
 # MAV_TYPE enum values for vehicle detection
 MAV_TYPE_SUBMARINE = 12      # ArduSub: 4-8 thrusters
 MAV_TYPE_GROUND_ROVER = 10   # ArduRover: 2 thrusters (BlueBoat)
-MAV_TYPE_SURFACE_BOAT = 16   # Surface boat: 2 thrusters
+MAV_TYPE_SURFACE_BOAT = 11   # Surface boat: 2 thrusters
+
+# SERVOn_FUNCTION values used to map thrusters/motors to output channels
+SERVO_FUNCTION_MOTORS = {33 + i: i + 1 for i in range(8)}  # Motor1..Motor8 -> thruster number
+SERVO_FUNCTION_THROTTLE_LEFT = 73
+SERVO_FUNCTION_THROTTLE_RIGHT = 74
+THRUSTER_DETECT_INTERVAL = 600  # Re-read SERVOn_FUNCTION params every 10 minutes
 
 # Define potential Mavlink endpoints to try
 MAVLINK_ENDPOINTS = [
@@ -61,6 +70,15 @@ MAVLINK_ENDPOINTS = [
     'http://localhost/mavlink2rest/mavlink/vehicles/1/components/1/messages',
     'http://blueos.local/mavlink2rest/mavlink/vehicles/1/components/1/messages'
 ]
+# Matching endpoints for POSTing messages (same order as MAVLINK_ENDPOINTS)
+MAVLINK_POST_ENDPOINTS = [
+    'http://host.docker.internal/mavlink2rest/mavlink',
+    'http://host.docker.internal:6040/v1/mavlink',
+    'http://192.168.2.2/mavlink2rest/mavlink',
+    'http://localhost/mavlink2rest/mavlink',
+    'http://blueos.local/mavlink2rest/mavlink'
+]
+STALE_MESSAGE_SECONDS = 10.0  # mavlink2rest serves its last cached message forever; older than this = vehicle offline
 
 UPDATE_INTERVAL = 60  # Update every 60 seconds (1 minute)
 PWM_SAMPLE_INTERVAL = 5  # Sample PWM values every 5 seconds when armed
@@ -72,6 +90,14 @@ WEBSOCKET_UPDATE_INTERVAL = 1.0  # Seconds between WebSocket updates
 DIVE_DEPTH_THRESHOLD = 1.0  # Depth threshold in meters to count as diving
 BATTERY_SWAP_VOLTAGE_THRESHOLD = 1.0  # Voltage increase (V) to detect battery swap on reconnect
 MAX_PLAUSIBLE_SPEED_MS = 15.0  # Speed cap (m/s) to filter GPS glitches
+MIN_SPEED_FOR_DISTANCE_MS = 0.2  # Ignore velocity noise below this when integrating distance
+PWM_NEUTRAL = 1500  # Thruster/motor neutral PWM (us)
+PWM_ACTIVE_DEADBAND = 25  # |pwm - neutral| above this (us) counts as running
+ACCESSORY_DEFAULT_OFF_PWM = 1100  # Typical "off" output for lights; configurable per accessory
+MISSIONS_HEADERS = ['start_time', 'end_time', 'start_voltage', 'end_voltage',
+                    'start_cpu_temp', 'end_cpu_temp', 'total_ah', 'start_uptime', 'end_uptime',
+                    'voltage_min', 'max_pwm_deviation', 'hard_use',
+                    'distance_m', 'max_current_a', 'avg_current_a', 'max_speed', 'avg_speed', 'wh']
 
 # ArduSub flight mode numbers (custom_mode) -> display name
 ARDUSUB_MODES = {
@@ -87,6 +113,28 @@ ARDUROVER_MODES = {
 }
 
 app = Flask(__name__, static_folder='static')
+
+def _atomic_write_json(path: Path, data: Any) -> None:
+    """Write JSON so a power cut leaves either the old or the new file, never a truncated one."""
+    tmp = path.with_name(path.name + '.tmp')
+    with open(tmp, 'w') as f:
+        json.dump(data, f, indent=2, default=str)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def _parse_mavlink_time(value: Any) -> Optional[datetime.datetime]:
+    """Parse mavlink2rest's RFC 3339 timestamps (may carry nanoseconds and a trailing Z)."""
+    if not isinstance(value, str):
+        return None
+    try:
+        value = re.sub(r'(\.\d{6})\d+', r'\1', value.replace('Z', '+00:00'))
+        parsed = datetime.datetime.fromisoformat(value)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
 
 REGISTER_SERVICE = {
     "name": "Odometer",
@@ -185,14 +233,19 @@ class OdometerService:
         self.thruster_stats = {
             'thruster_count': 0,
             'mav_type': -1,
-            'thrusters': []  # [{'run_minutes': 0, 'avg_pwm_sum': 0, 'avg_pwm_count': 0}, ...]
+            'channels': [],  # Servo output channel for thruster 1, 2, ...
+            'channel_source': 'default',  # 'params' once read from SERVOn_FUNCTION
+            'thrusters': []  # [{'run_seconds': 0.0, 'run_minutes': 0, 'avg_pwm_sum': 0, 'avg_pwm_count': 0}, ...]
         }
         self.thruster_lock = threading.RLock()
-        self.accessories = {}  # {id: {'name': str, 'channel': int, 'run_minutes': int, 'avg_pwm_sum': float, 'avg_pwm_count': int}}
+        self.accessories = {}  # {id: {'name', 'channel', 'off_pwm', 'run_seconds', 'run_minutes', 'avg_pwm_sum', 'avg_pwm_count'}}
         self.accessory_lock = threading.RLock()
         self._next_accessory_id = 1
         self.last_update_time = time.time()
         self.minutes_since_update = 0
+        self._endpoint_index = 0  # Index into MAVLINK_ENDPOINTS of the endpoint that last answered
+        self._message_seen = {}  # {msg_type: (counter, monotonic time the counter last changed)}
+        self._freshness_lock = threading.Lock()
         self.setup_csv_files()
         self.load_stats()
         self.load_modes()
@@ -217,34 +270,39 @@ class OdometerService:
         self.distance_sample_thread = threading.Thread(target=self.distance_sample_loop)
         self.distance_sample_thread.daemon = True
         self.distance_sample_thread.start()
+
+        # Map thrusters to output channels from autopilot params
+        self.thruster_detect_thread = threading.Thread(target=self.thruster_detect_loop)
+        self.thruster_detect_thread.daemon = True
+        self.thruster_detect_thread.start()
     
     def detect_startup(self):
+        """Count a startup when the vehicle has rebooted since the extension last ran.
+
+        Uses the kernel boot_id, which changes on every host reboot but not on container restarts.
         """
-        Detect if this is a new startup and increment the counter if it is.
-        Uses a marker file to detect if this is a new startup.
-        
-        Note: Energy tracking is handled automatically:
-        - previous_batteries_wh is loaded from CSV
-        - current_battery_wh is calculated from MAVLink current_consumed (which persists)
-        - total_wh_consumed = previous_batteries_wh + current_battery_wh
-        """
-        is_new_startup = not STARTUP_MARKER.exists()
-        
-        if is_new_startup:
-            logger.info("Detected new vehicle startup")
-            with self.stats_lock:
-                self.stats['startups'] += 1
-                # Reset voltage averaging for fresh start
-                self.stats['voltage_sum'] = 0.0
-                self.stats['voltage_count'] = 0
-            
-            # Create the marker file
-            with open(STARTUP_MARKER, 'w') as f:
-                f.write(datetime.datetime.now().isoformat())
-            
-            # Write the updated stats to CSV right away
-            self.write_stats_to_csv(startup_detected=True)
-    
+        try:
+            boot_id = BOOT_ID_PATH.read_text().strip()
+        except OSError:
+            boot_id = ''
+        try:
+            last_boot_id = LAST_BOOT_ID_FILE.read_text().strip()
+        except OSError:
+            last_boot_id = ''
+        STARTUP_MARKER.unlink(missing_ok=True)
+
+        if boot_id and boot_id == last_boot_id:
+            logger.info("Extension restarted without a vehicle reboot; not counting a startup")
+            return
+
+        logger.info("Detected new vehicle startup")
+        with self.stats_lock:
+            self.stats['startups'] += 1
+        # Write the updated stats to CSV right away, then remember this boot
+        self.write_stats_to_csv(startup_detected=True)
+        if boot_id:
+            LAST_BOOT_ID_FILE.write_text(boot_id)
+
     def upgrade_csv_format(self):
         """Upgrade old CSV format to new format if needed"""
         try:
@@ -375,32 +433,35 @@ class OdometerService:
         if not MISSIONS_CSV.exists():
             with open(MISSIONS_CSV, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(['start_time', 'end_time', 'start_voltage', 'end_voltage',
-                               'start_cpu_temp', 'end_cpu_temp', 'total_ah', 'start_uptime', 'end_uptime',
-                               'voltage_min', 'max_pwm_deviation', 'hard_use',
-                               'distance_m', 'max_current_a', 'avg_current_a', 'max_speed', 'avg_speed'])
+                writer.writerow(MISSIONS_HEADERS)
         else:
             self.upgrade_missions_csv_format()
     
     def upgrade_missions_csv_format(self):
-        """Add distance_m, max_current_a, avg_current_a, max_speed, avg_speed columns if missing."""
+        """Append any MISSIONS_HEADERS columns missing from an older missions CSV."""
         try:
             if not MISSIONS_CSV.exists():
                 return
             with open(MISSIONS_CSV, 'r', newline='') as f:
                 reader = csv.reader(f)
                 headers = next(reader, [])
-                if 'distance_m' in headers:
+                missing = [h for h in MISSIONS_HEADERS if h not in headers]
+                if not missing:
                     return
                 rows = list(reader)
-            new_headers = headers + ['distance_m', 'max_current_a', 'avg_current_a', 'max_speed', 'avg_speed']
-            with open(MISSIONS_CSV, 'w', newline='') as f:
+            new_headers = headers + missing
+            tmp = MISSIONS_CSV.with_name(MISSIONS_CSV.name + '.tmp')
+            with open(tmp, 'w', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow(new_headers)
                 for row in rows:
-                    new_row = row + ['0', '0', '0', '0', '0'][:len(new_headers) - len(row)]
-                    writer.writerow(new_row)
-            logger.info("Upgraded missions CSV with distance, current, and speed columns")
+                    # Pre-wh rows get an empty wh so the UI falls back to estimating from Ah
+                    pad = ['' if h == 'wh' else '0' for h in new_headers[len(row):]]
+                    writer.writerow(row + pad)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, MISSIONS_CSV)
+            logger.info(f"Upgraded missions CSV with columns: {missing}")
         except Exception as e:
             logger.error(f"Error upgrading missions CSV: {e}")
 
@@ -435,6 +496,8 @@ class OdometerService:
                                     m['avg_current_a'] = float(row[14]) if row[14].strip() else 0.0
                                     m['max_speed'] = float(row[15]) if row[15].strip() else 0.0
                                     m['avg_speed'] = float(row[16]) if row[16].strip() else 0.0
+                                if len(row) >= 18 and row[17].strip():
+                                    m['wh'] = float(row[17])
                                 self.missions.append(m)
                 logger.info(f"Loaded {len(self.missions)} missions from {MISSIONS_CSV}")
             except Exception as e:
@@ -457,8 +520,7 @@ class OdometerService:
         try:
             with self.stats_lock:
                 data = {'mode_minutes': dict(self.stats.get('mode_minutes', {}))}
-            with open(MODES_FILE, 'w') as f:
-                json.dump(data, f, indent=2)
+            _atomic_write_json(MODES_FILE, data)
         except Exception as e:
             logger.error(f"Error saving modes: {e}")
 
@@ -469,9 +531,14 @@ class OdometerService:
                 with open(THRUSTERS_FILE, 'r') as f:
                     data = json.load(f)
                 with self.thruster_lock:
-                    self.thruster_stats['thruster_count'] = data.get('thruster_count', 0)
+                    count = data.get('thruster_count', 0)
+                    self.thruster_stats['thruster_count'] = count
                     self.thruster_stats['mav_type'] = data.get('mav_type', -1)
+                    self.thruster_stats['channels'] = data.get('channels') or list(range(1, count + 1))
+                    self.thruster_stats['channel_source'] = data.get('channel_source', 'default')
                     self.thruster_stats['thrusters'] = data.get('thrusters', [])
+                    for t in self.thruster_stats['thrusters']:
+                        t.setdefault('run_seconds', float(t.get('run_minutes', 0)) * 60)
                 logger.info(f"Loaded thruster stats: {self.thruster_stats['thruster_count']} thrusters")
             except Exception as e:
                 logger.error(f"Error loading thruster stats: {e}")
@@ -483,10 +550,11 @@ class OdometerService:
                 data = {
                     'thruster_count': self.thruster_stats['thruster_count'],
                     'mav_type': self.thruster_stats['mav_type'],
-                    'thrusters': self.thruster_stats['thrusters']
+                    'channels': list(self.thruster_stats.get('channels', [])),
+                    'channel_source': self.thruster_stats.get('channel_source', 'default'),
+                    'thrusters': [dict(t) for t in self.thruster_stats['thrusters']]
                 }
-            with open(THRUSTERS_FILE, 'w') as f:
-                json.dump(data, f, indent=2)
+            _atomic_write_json(THRUSTERS_FILE, data)
         except Exception as e:
             logger.error(f"Error saving thruster stats: {e}")
     
@@ -503,8 +571,7 @@ class OdometerService:
     def save_vehicle(self, data: dict) -> None:
         """Save vehicle name to JSON file"""
         try:
-            with open(VEHICLE_FILE, 'w') as f:
-                json.dump(data, f, indent=2)
+            _atomic_write_json(VEHICLE_FILE, data)
         except Exception as e:
             logger.error(f"Error saving vehicle: {e}")
     
@@ -549,6 +616,8 @@ class OdometerService:
                         self.accessories[kid] = {
                             'name': v.get('name', ''),
                             'channel': int(v.get('channel', 1)),
+                            'off_pwm': int(v.get('off_pwm', ACCESSORY_DEFAULT_OFF_PWM)),
+                            'run_seconds': float(v.get('run_seconds', int(v.get('run_minutes', 0)) * 60)),
                             'run_minutes': int(v.get('run_minutes', 0)),
                             'avg_pwm_sum': float(v.get('avg_pwm_sum', 0)),
                             'avg_pwm_count': int(v.get('avg_pwm_count', 0))
@@ -564,14 +633,32 @@ class OdometerService:
         """Save accessories to JSON file"""
         try:
             with self.accessory_lock:
-                data = {'accessories': self.accessories}
-            with open(ACCESSORIES_FILE, 'w') as f:
-                json.dump(data, f, indent=2)
+                data = {'accessories': {k: dict(v) for k, v in self.accessories.items()}}
+            _atomic_write_json(ACCESSORIES_FILE, data)
         except Exception as e:
             logger.error(f"Error saving accessories: {e}")
     
+    def _apply_thruster_layout(self, mav_type: int, channels: List[int], source: str) -> None:
+        """Resize the thruster list to match channels, preserving existing per-thruster data by index."""
+        with self.thruster_lock:
+            ts = self.thruster_stats
+            if (ts['mav_type'] == mav_type and ts.get('channels') == channels and
+                    ts.get('channel_source') == source and len(ts['thrusters']) == len(channels)):
+                return
+            ts['mav_type'] = mav_type
+            ts['thruster_count'] = len(channels)
+            ts['channels'] = list(channels)
+            ts['channel_source'] = source
+            old = ts['thrusters']
+            ts['thrusters'] = [
+                old[i] if i < len(old) else {'run_seconds': 0.0, 'run_minutes': 0, 'avg_pwm_sum': 0, 'avg_pwm_count': 0}
+                for i in range(len(channels))
+            ]
+            logger.info(f"Thruster layout: {len(channels)} on channels {channels} (from {source})")
+        self.save_thruster_stats()
+
     def get_thruster_count_from_mav_type(self, mav_type: int) -> int:
-        """Map MAV_TYPE to thruster count. ArduSub: 4-8 (default 8), Boat/Rover: 2"""
+        """Default thruster count until SERVOn_FUNCTION params are read. ArduSub: 8, Boat/Rover: 2"""
         if mav_type == MAV_TYPE_SUBMARINE:
             return 8  # ArduSub: default to 8, covers most frames
         if mav_type in (MAV_TYPE_GROUND_ROVER, MAV_TYPE_SURFACE_BOAT):
@@ -627,8 +714,8 @@ class OdometerService:
                     'unit': 'thruster',
                     'unit_plural': 'thrusters',
                     'grids': [
-                        {'label': 'Vertical', 'rows': [[2, 1], [4, 3]]},
-                        {'label': 'Horizontal', 'rows': [[6, 5], [8, 7]]}
+                        {'label': 'Horizontal', 'rows': [[2, 1], [4, 3]]},
+                        {'label': 'Vertical', 'rows': [[6, 5], [8, 7]]}
                     ]
                 }
             # Default for 3 or other ROV counts
@@ -645,8 +732,8 @@ class OdometerService:
             'grids': [{'label': 'Channels', 'rows': [list(range(1, thruster_count + 1))]}]
         }
     
-    def add_accessory(self, name: str, channel: int) -> str:
-        """Add a new accessory. Returns the new accessory ID."""
+    def add_accessory(self, name: str, channel: int, off_pwm: int = ACCESSORY_DEFAULT_OFF_PWM) -> str:
+        """Add a new accessory. Run time counts while its output is away from off_pwm. Returns the new ID."""
         channel = max(1, min(16, int(channel)))
         with self.accessory_lock:
             aid = str(self._next_accessory_id)
@@ -654,6 +741,8 @@ class OdometerService:
             self.accessories[aid] = {
                 'name': str(name).strip() or f'Device {aid}',
                 'channel': channel,
+                'off_pwm': int(off_pwm),
+                'run_seconds': 0.0,
                 'run_minutes': 0,
                 'avg_pwm_sum': 0.0,
                 'avg_pwm_count': 0
@@ -675,6 +764,7 @@ class OdometerService:
         with self.accessory_lock:
             if accessory_id in self.accessories:
                 self.accessories[accessory_id]['run_minutes'] = 0
+                self.accessories[accessory_id]['run_seconds'] = 0.0
                 self.accessories[accessory_id]['avg_pwm_sum'] = 0.0
                 self.accessories[accessory_id]['avg_pwm_count'] = 0
                 self.save_accessories()
@@ -686,6 +776,7 @@ class OdometerService:
                 idx = tid - 1  # Convert to 0-indexed
                 if 0 <= idx < len(self.thruster_stats['thrusters']):
                     self.thruster_stats['thrusters'][idx]['run_minutes'] = 0
+                    self.thruster_stats['thrusters'][idx]['run_seconds'] = 0.0
                     self.thruster_stats['thrusters'][idx]['avg_pwm_sum'] = 0
                     self.thruster_stats['thrusters'][idx]['avg_pwm_count'] = 0
             self.save_thruster_stats()
@@ -717,73 +808,57 @@ class OdometerService:
             self._rewrite_missions_csv()
         logger.info("Cleared all completed missions")
 
+    def _mission_row(self, m: dict) -> List[str]:
+        """Serialize a mission in MISSIONS_HEADERS order."""
+        return [
+            str(m.get('start_time', '')),
+            str(m.get('end_time', '')),
+            str(m.get('start_voltage', 0)),
+            str(m.get('end_voltage', 0)),
+            str(m.get('start_cpu_temp', 0)),
+            str(m.get('end_cpu_temp', 0)),
+            str(m.get('total_ah', 0)),
+            str(m.get('start_uptime', 0)),
+            str(m.get('end_uptime', 0)),
+            str(m.get('voltage_min', 0) or 0),
+            str(m.get('max_pwm_deviation', 0) or 0),
+            'true' if m.get('hard_use') else 'false',
+            str(m.get('distance_m', 0)),
+            str(m.get('max_current_a', 0)),
+            str(m.get('avg_current_a', 0)),
+            str(m.get('max_speed', 0)),
+            str(m.get('avg_speed', 0)),
+            str(m['wh']) if m.get('wh') is not None else ''
+        ]
+
     def _rewrite_missions_csv(self) -> None:
         """Rewrite MISSIONS_CSV with current missions list."""
-        headers = ['start_time', 'end_time', 'start_voltage', 'end_voltage',
-                   'start_cpu_temp', 'end_cpu_temp', 'total_ah', 'start_uptime', 'end_uptime',
-                   'voltage_min', 'max_pwm_deviation', 'hard_use',
-                   'distance_m', 'max_current_a', 'avg_current_a', 'max_speed', 'avg_speed']
-        with open(MISSIONS_CSV, 'w', newline='') as f:
+        tmp = MISSIONS_CSV.with_name(MISSIONS_CSV.name + '.tmp')
+        with open(tmp, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(headers)
+            writer.writerow(MISSIONS_HEADERS)
             for m in self.missions:
-                writer.writerow([
-                    m.get('start_time', ''),
-                    m.get('end_time', ''),
-                    str(m.get('start_voltage', 0)),
-                    str(m.get('end_voltage', 0)),
-                    str(m.get('start_cpu_temp', 0)),
-                    str(m.get('end_cpu_temp', 0)),
-                    str(m.get('total_ah', 0)),
-                    str(m.get('start_uptime', 0)),
-                    str(m.get('end_uptime', 0)),
-                    str(m.get('voltage_min', 0)),
-                    str(m.get('max_pwm_deviation', 0)),
-                    'true' if m.get('hard_use') else 'false',
-                    str(m.get('distance_m', 0)),
-                    str(m.get('max_current_a', 0)),
-                    str(m.get('avg_current_a', 0)),
-                    str(m.get('max_speed', 0)),
-                    str(m.get('avg_speed', 0))
-                ])
+                writer.writerow(self._mission_row(m))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, MISSIONS_CSV)
 
     def save_mission(self, mission: dict):
         """Append a single mission to persistent storage"""
         try:
-            hard_use = self._is_hard_use(mission)
-            voltage_min = mission.get('voltage_min', 0) or 0
-            max_pwm = mission.get('max_pwm_deviation', 0) or 0
+            mission['hard_use'] = self._is_hard_use(mission)
             with open(MISSIONS_CSV, 'a', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow([
-                    mission.get('start_time', ''),
-                    mission.get('end_time', ''),
-                    str(mission.get('start_voltage', 0)),
-                    str(mission.get('end_voltage', 0)),
-                    str(mission.get('start_cpu_temp', 0)),
-                    str(mission.get('end_cpu_temp', 0)),
-                    str(mission.get('total_ah', 0)),
-                    str(mission.get('start_uptime', 0)),
-                    str(mission.get('end_uptime', 0)),
-                    str(voltage_min),
-                    str(max_pwm),
-                    'true' if hard_use else 'false',
-                    str(mission.get('distance_m', 0)),
-                    str(mission.get('max_current_a', 0)),
-                    str(mission.get('avg_current_a', 0)),
-                    str(mission.get('max_speed', 0)),
-                    str(mission.get('avg_speed', 0))
-                ])
+                writer.writerow(self._mission_row(mission))
         except Exception as e:
             logger.error(f"Error saving mission: {e}")
-    
+
     def persist_current_session(self):
         """Save current mission/session to disk so it survives power-off"""
         try:
             mission = self.stats['current_mission']
             if mission.get('start_time') is not None:
-                with open(CURRENT_SESSION_FILE, 'w') as f:
-                    json.dump(mission, f, default=str)
+                _atomic_write_json(CURRENT_SESSION_FILE, mission)
         except Exception as e:
             logger.error(f"Error persisting current session: {e}")
     
@@ -835,32 +910,16 @@ class OdometerService:
             if not end_time:
                 end_time = self.get_local_time().isoformat()
             
-            # Build completed mission
-            mission = {
-                'start_time': start_time,
-                'end_time': end_time,
-                'start_voltage': float(prev_session.get('start_voltage', 0)),
-                'end_voltage': end_voltage,
-                'start_cpu_temp': float(prev_session.get('start_cpu_temp', 0)),
-                'end_cpu_temp': end_cpu_temp,
-                'total_ah': float(prev_session.get('total_ah', 0)),
-                'start_uptime': prev_session.get('start_uptime', 0),
-                'end_uptime': end_uptime,
-                'voltage_min': float(prev_session.get('voltage_min', 0) or 0),
-                'max_pwm_deviation': float(prev_session.get('max_pwm_deviation', 0) or 0),
-                'distance_m': float(prev_session.get('distance_m', 0) or 0),
-                'max_current_a': float(prev_session.get('max_current_a', 0) or 0),
-                'avg_current_a': (float(prev_session.get('current_sum', 0) or 0) / c) if (c := int(prev_session.get('current_count', 0) or 0)) > 0 else 0.0,
-                'max_speed': float(prev_session.get('max_speed', 0) or 0),
-                'avg_speed': (float(prev_session.get('speed_sum', 0) or 0) / s) if (s := int(prev_session.get('speed_count', 0) or 0)) > 0 else 0.0
-            }
-            
-            self.missions.append(mission)
-            self.save_mission(mission)
-            logger.info(f"Recorded previous power-on session to usage history: {mission}")
-            
+            if any(m.get('start_time') == str(start_time) for m in self.missions):
+                logger.info(f"Previous session {start_time} already in usage history; not recording it again")
+            else:
+                with self.stats_lock:
+                    self._close_session(prev_session, end_time, end_voltage, end_cpu_temp, end_uptime)
+                    # Persist the lifetime energy that now includes this session
+                    self.write_stats_to_csv("session_closed", timestamp=end_time)
+
             # Check if voltage decreased during that session - if so, battery swap likely on reconnect
-            start_voltage = mission['start_voltage']
+            start_voltage = float(prev_session.get('start_voltage', 0) or 0)
             if start_voltage > 0 and end_voltage > 0 and end_voltage < start_voltage:
                 with self.stats_lock:
                     self.stats['pending_battery_swap_check'] = True
@@ -1050,67 +1109,74 @@ class OdometerService:
                 time.sleep(10)  # Sleep for a shorter time if there was an error
     
     def pwm_sample_loop(self):
-        """Sample PWM values every 5 seconds when armed for duty-cycle averaging (thrusters + accessories)"""
+        """Sample servo outputs every PWM_SAMPLE_INTERVAL seconds.
+
+        Thruster run time accrues only while armed and that thruster's output is outside the neutral deadband.
+        Accessory run time accrues while its output is away from its configured off PWM. Both are persisted
+        once a minute by update_stats.
+        """
+        last_sample = time.monotonic()
         while not self.stop_event.is_set():
+            time.sleep(PWM_SAMPLE_INTERVAL)
+            now = time.monotonic()
+            dt = min(now - last_sample, PWM_SAMPLE_INTERVAL * 2)
+            last_sample = now
             try:
-                time.sleep(PWM_SAMPLE_INTERVAL)
-                if not self.get_armed_status():
-                    continue
                 servo_values = self.get_servo_output_raw()
-                thruster_stats_changed = False
-                with self.thruster_lock:
-                    thruster_count = self.thruster_stats['thruster_count']
-                    if thruster_count > 0:
-                        for i in range(min(thruster_count, len(servo_values))):
-                            pwm = servo_values[i]
-                            if pwm > 0:
-                                t = self.thruster_stats['thrusters'][i]
-                                t['avg_pwm_sum'] = t.get('avg_pwm_sum', 0) + pwm
-                                t['avg_pwm_count'] = t.get('avg_pwm_count', 0) + 1
-                                thruster_stats_changed = True
-                if thruster_stats_changed:
-                    self.save_thruster_stats()
-                # Sample accessory channels (avg PWM only; run_minutes updated per minute in update_stats)
-                accessory_changed = False
+                if servo_values is None:
+                    continue
+                is_armed = self.get_armed_status()
+                max_dev = 0
+                if is_armed:
+                    with self.thruster_lock:
+                        channels = self.thruster_stats.get('channels') or []
+                        for t, ch in zip(self.thruster_stats['thrusters'], channels):
+                            pwm = servo_values[ch - 1] if 1 <= ch <= len(servo_values) else 0
+                            if pwm <= 0:
+                                continue
+                            t['avg_pwm_sum'] = t.get('avg_pwm_sum', 0) + pwm
+                            t['avg_pwm_count'] = t.get('avg_pwm_count', 0) + 1
+                            dev = abs(pwm - PWM_NEUTRAL)
+                            max_dev = max(max_dev, dev)
+                            if dev > PWM_ACTIVE_DEADBAND:
+                                t['run_seconds'] = t.get('run_seconds', 0.0) + dt
+                                t['run_minutes'] = int(t['run_seconds'] // 60)
                 with self.accessory_lock:
-                    for aid, acc in self.accessories.items():
+                    for acc in self.accessories.values():
                         ch = acc.get('channel', 1)
-                        idx = max(0, min(ch - 1, len(servo_values) - 1))
-                        pwm = servo_values[idx] if idx < len(servo_values) else 0
-                        if pwm > 0:
+                        pwm = servo_values[ch - 1] if 1 <= ch <= len(servo_values) else 0
+                        if pwm <= 0:
+                            continue
+                        if is_armed:
                             acc['avg_pwm_sum'] = acc.get('avg_pwm_sum', 0) + pwm
                             acc['avg_pwm_count'] = acc.get('avg_pwm_count', 0) + 1
-                            accessory_changed = True
-                if accessory_changed:
-                    self.save_accessories()
-                # Session PWM for hard-use: max deviation from 1500 (neutral)
-                max_dev = 0
-                for pwm in servo_values:
-                    if pwm > 0:
-                        dev = abs(pwm - 1500)
-                        if dev > max_dev:
-                            max_dev = dev
+                        if abs(pwm - acc.get('off_pwm', ACCESSORY_DEFAULT_OFF_PWM)) > PWM_ACTIVE_DEADBAND:
+                            acc['run_seconds'] = acc.get('run_seconds', 0.0) + dt
+                            acc['run_minutes'] = int(acc['run_seconds'] // 60)
+                # Session hard-use metric: thruster/motor channels only (lights etc. sit far from 1500 at rest)
                 if max_dev > 0:
                     with self.stats_lock:
                         m = self.stats['current_mission']
-                        cur = m.get('max_pwm_deviation', 0)
-                        if max_dev > cur:
+                        if max_dev > m.get('max_pwm_deviation', 0):
                             m['max_pwm_deviation'] = max_dev
             except Exception as e:
                 logger.debug(f"PWM sample loop: {e}")
 
     def distance_sample_loop(self):
-        """Sample ground speed at 1 Hz when armed; integrate for total_distance_m and session_distance_m."""
+        """Sample ground speed at 1 Hz when armed; integrate over the real elapsed time for distance."""
+        last_sample = time.monotonic()
         while not self.stop_event.is_set():
+            time.sleep(DISTANCE_SAMPLE_INTERVAL)
+            now = time.monotonic()
+            dt = min(now - last_sample, DISTANCE_SAMPLE_INTERVAL * 5)
+            last_sample = now
             try:
-                time.sleep(DISTANCE_SAMPLE_INTERVAL)
                 if not self.get_armed_status():
                     continue
                 speed_m_s = self.get_ground_speed_m_s()
-                if speed_m_s <= 0:
-                    continue
-                # Distance = speed * time (1 second)
-                distance_m = speed_m_s * DISTANCE_SAMPLE_INTERVAL
+                if speed_m_s < MIN_SPEED_FOR_DISTANCE_MS:
+                    continue  # Velocity noise while holding station would otherwise accumulate
+                distance_m = speed_m_s * dt
                 with self.stats_lock:
                     self.stats['total_distance_m'] = self.stats.get('total_distance_m', 0) + distance_m
                     m = self.stats['current_mission']
@@ -1118,96 +1184,163 @@ class OdometerService:
             except Exception as e:
                 logger.debug(f"Distance sample loop: {e}")
 
+    def _start_session(self, start_time: str, voltage: float, cpu_temp: float) -> dict:
+        """Begin a new usage session. Caller holds stats_lock."""
+        cpu = cpu_temp if cpu_temp > 0 else 0.0
+        self.stats['current_mission'] = {
+            'start_time': start_time,
+            'start_voltage': voltage,
+            'start_cpu_temp': cpu,
+            'end_voltage': voltage,
+            'end_cpu_temp': cpu,
+            'min_cpu_temp': cpu,
+            'max_cpu_temp': cpu,
+            'total_ah': 0.0,
+            'wh': 0.0,
+            'start_uptime': self.stats['total_minutes'],
+            'end_uptime': self.stats['total_minutes'],
+            'voltage_min': voltage,
+            'max_pwm_deviation': 0.0,
+            'distance_m': 0.0,
+            'max_current_a': 0.0,
+            'current_sum': 0.0,
+            'current_count': 0,
+            'max_speed': 0.0,
+            'speed_sum': 0.0,
+            'speed_count': 0,
+            # Battery-monitor readings when this session started; energy is measured from here so an
+            # extension restart mid-battery doesn't count the same energy again
+            'base_mah': None,
+            'base_hj': None,
+            # Energy counted before a battery-monitor reset within this session
+            'carried_ah': 0.0,
+            'carried_wh': 0.0
+        }
+        self.stats['voltage_sum'] = 0.0
+        self.stats['voltage_count'] = 0
+        return self.stats['current_mission']
+
+    def _update_session_energy(self, m: dict, consumed_mah: Optional[float], energy_hj: Optional[float],
+                               avg_voltage: float) -> None:
+        """Set the session's total_ah and wh from the battery monitor counters, relative to its baseline."""
+        if consumed_mah is not None:
+            if m.get('base_mah') is None:
+                m['base_mah'] = consumed_mah
+            m['total_ah'] = m.get('carried_ah', 0.0) + max(0.0, consumed_mah - m['base_mah']) / 1000.0
+        if energy_hj is not None:
+            # Prefer the autopilot's own energy integration (1 Wh = 36 hJ)
+            if m.get('base_hj') is None:
+                m['base_hj'] = energy_hj
+            m['wh'] = m.get('carried_wh', 0.0) + max(0.0, energy_hj - m['base_hj']) / 36.0
+        elif consumed_mah is not None:
+            m['wh'] = m.get('carried_wh', 0.0) + max(0.0, consumed_mah - m['base_mah']) / 1000.0 * avg_voltage
+
+    def _close_session(self, session: dict, end_time: str, end_voltage: float, end_cpu_temp: float,
+                       end_uptime: int) -> dict:
+        """Record a finished session in usage history and fold its energy into the lifetime total.
+
+        Caller holds stats_lock (or is running single-threaded during startup).
+        """
+        c_count = int(session.get('current_count', 0) or 0)
+        s_count = int(session.get('speed_count', 0) or 0)
+        mission = {
+            'start_time': str(session['start_time']),
+            'end_time': str(end_time),
+            'start_voltage': float(session.get('start_voltage', 0) or 0),
+            'end_voltage': end_voltage,
+            'start_cpu_temp': float(session.get('start_cpu_temp', 0) or 0),
+            'end_cpu_temp': end_cpu_temp,
+            'total_ah': float(session.get('total_ah', 0) or 0),
+            'start_uptime': int(session.get('start_uptime', 0) or 0),
+            'end_uptime': end_uptime,
+            'voltage_min': float(session.get('voltage_min', 0) or 0),
+            'max_pwm_deviation': float(session.get('max_pwm_deviation', 0) or 0),
+            'distance_m': float(session.get('distance_m', 0) or 0),
+            'max_current_a': float(session.get('max_current_a', 0) or 0),
+            'avg_current_a': (float(session.get('current_sum', 0) or 0) / c_count) if c_count > 0 else 0.0,
+            'max_speed': float(session.get('max_speed', 0) or 0),
+            'avg_speed': (float(session.get('speed_sum', 0) or 0) / s_count) if s_count > 0 else 0.0
+        }
+        if 'wh' in session:
+            mission['wh'] = float(session.get('wh') or 0)
+        else:
+            # Session persisted by an older version without per-session Wh: estimate as the UI did
+            avg_v = (mission['start_voltage'] + end_voltage) / 2
+            mission['wh'] = mission['total_ah'] * avg_v if avg_v > 0 else 0.0
+        mission['hard_use'] = self._is_hard_use(mission)
+        self.missions.append(mission)
+        self.save_mission(mission)
+        self.stats['previous_batteries_wh'] += mission['wh']
+        logger.info(f"Session closed: {mission}")
+        return mission
+
     def update_stats(self):
         """Update the statistics and write to CSV"""
         try:
             # Check for time jumps (system time corrections)
             current_time = time.time()
             time_diff_seconds = current_time - self.last_update_time
-            expected_diff_seconds = UPDATE_INTERVAL
-            
-            # Calculate minutes to add based on actual time passed vs expected
-            if abs(time_diff_seconds - expected_diff_seconds) > (MAX_TIME_JUMP_MINUTES * 60):
-                # A significant time jump detected, use expected time diff instead
-                logger.warning(f"Time jump detected! Diff: {time_diff_seconds/60:.2f} minutes. Using expected time interval.")
-                minutes_to_add = expected_diff_seconds / 60
+            if abs(time_diff_seconds - UPDATE_INTERVAL) > (MAX_TIME_JUMP_MINUTES * 60):
+                logger.warning(f"Time jump detected! Diff: {time_diff_seconds/60:.2f} minutes.")
                 time_status = "corrected"
             else:
-                # Normal update, use actual time diff
-                minutes_to_add = time_diff_seconds / 60
                 time_status = "normal"
-            
-            # Get current vehicle status (voltage, armed, current_consumed, depth, mav_type, custom_mode, current_battery_a, groundspeed)
-            current_voltage, is_armed, current_consumed, current_depth, mav_type, custom_mode, current_battery_a, groundspeed = self.get_vehicle_status()
-            
-            # Get current CPU temperature
+
+            vehicle = self.get_vehicle_status()
+            current_voltage = vehicle['voltage']
+            is_armed = vehicle['is_armed']
+            current_depth = vehicle['depth']
+            mav_type = vehicle['mav_type']
+            current_battery_a = vehicle['current_battery_a']
+            groundspeed = vehicle['groundspeed']
+            consumed_mah = vehicle['consumed_mah']
             current_cpu_temp = self.get_cpu_temperature()
-            
-            # Update thruster stats: detect vehicle type, ensure thruster array exists, update run minutes and PWM
-            thruster_count = self.get_thruster_count_from_mav_type(mav_type)
-            thruster_stats_changed = False
-            if thruster_count > 0:
+            # Fetch time before taking the lock (HTTP call)
+            now_iso = self.get_local_time().isoformat()
+
+            # Fall back to a default 1..N channel layout until autopilot params give the real mapping
+            default_count = self.get_thruster_count_from_mav_type(mav_type)
+            if default_count > 0:
                 with self.thruster_lock:
-                    if (self.thruster_stats['thruster_count'] != thruster_count or 
-                        len(self.thruster_stats['thrusters']) != thruster_count):
-                        self.thruster_stats['thruster_count'] = thruster_count
-                        self.thruster_stats['mav_type'] = mav_type
-                        # Preserve existing thruster data where indices overlap
-                        old_thrusters = {i: t for i, t in enumerate(self.thruster_stats['thrusters'])}
-                        self.thruster_stats['thrusters'] = [
-                            old_thrusters.get(i, {'run_minutes': 0, 'avg_pwm_sum': 0, 'avg_pwm_count': 0})
-                            for i in range(thruster_count)
-                        ]
-                        thruster_stats_changed = True
-                    
-                    if is_armed:
-                        for i in range(min(thruster_count, 8)):
-                            self.thruster_stats['thrusters'][i]['run_minutes'] = \
-                                self.thruster_stats['thrusters'][i].get('run_minutes', 0) + 1
-                        thruster_stats_changed = True
-                
-                if thruster_stats_changed:
-                    self.save_thruster_stats()
-            
-            # Accessory run minutes (1 per real minute when armed)
-            if is_armed:
-                with self.accessory_lock:
-                    acc_changed = False
-                    for acc in self.accessories.values():
-                        acc['run_minutes'] = acc.get('run_minutes', 0) + 1
-                        acc_changed = True
-                    if acc_changed:
-                        self.save_accessories()
-            
+                    use_default = (self.thruster_stats.get('channel_source') != 'params' or
+                                   self.thruster_stats['mav_type'] != mav_type)
+                if use_default:
+                    self._apply_thruster_layout(mav_type, list(range(1, default_count + 1)), 'default')
+
+            # Run time accumulates in pwm_sample_loop; persist it once a minute
+            self.save_thruster_stats()
+            self.save_accessories()
+
             modes_changed = False
             with self.stats_lock:
                 # Update total minutes
-                self.stats['total_minutes'] += 1  # Always add 1 minute regardless of time jump
-                
+                self.stats['total_minutes'] += 1
+
                 # Update armed/disarmed minutes
                 if is_armed:
                     self.stats['armed_minutes'] += 1
                 else:
                     self.stats['disarmed_minutes'] += 1
-                
-                # Update dive minutes if depth exceeds threshold
+
+                # Update dive minutes if depth exceeds threshold (depth is only reported for submarines)
                 if current_depth >= DIVE_DEPTH_THRESHOLD:
                     self.stats['dive_minutes'] += 1
                     logger.info(f"Dive time incremented: depth={current_depth}m >= {DIVE_DEPTH_THRESHOLD}m threshold")
-                
-                # Store current depth
                 self.stats['last_depth'] = current_depth
 
                 # Flight mode tracking: increment mode_minutes for this minute
-                mode_name = self._mode_name(custom_mode, mav_type)
-                if mode_name:
+                if vehicle['online']:
+                    mode_name = self._mode_name(vehicle['custom_mode'], mav_type)
                     mode_min = self.stats.get('mode_minutes', {})
                     mode_min[mode_name] = mode_min.get(mode_name, 0) + 1
                     self.stats['mode_minutes'] = mode_min
                     modes_changed = True
 
-                # Peak/avg current and speed: update current_mission (no lock in save_modes)
                 m = self.stats['current_mission']
+                if m.get('start_time') is None:
+                    m = self._start_session(now_iso, current_voltage, current_cpu_temp)
+
+                # Peak/avg current and speed
                 if current_battery_a > 0:
                     m['max_current_a'] = max(m.get('max_current_a', 0), current_battery_a)
                     m['current_sum'] = m.get('current_sum', 0) + current_battery_a
@@ -1216,7 +1349,7 @@ class OdometerService:
                     m['max_speed'] = max(m.get('max_speed', 0), groundspeed)
                     m['speed_sum'] = m.get('speed_sum', 0) + groundspeed
                     m['speed_count'] = m.get('speed_count', 0) + 1
-                
+
                 # Check for battery swap on startup (voltage decreased last session, high now)
                 if self.stats.get('pending_battery_swap_check') and current_voltage > 0:
                     last_v = self.stats['last_voltage']
@@ -1224,205 +1357,77 @@ class OdometerService:
                         self.stats['battery_swaps'] += 1
                         logger.info(f"Battery swap detected on reconnect: voltage was {last_v}V at shutdown, now {current_voltage}V")
                     self.stats['pending_battery_swap_check'] = False
-                
-                # Update voltage tracking for averaging
+
                 if current_voltage > 0:
                     self.stats['voltage_sum'] += current_voltage
                     self.stats['voltage_count'] += 1
-                    
-                    # Calculate average voltage for this battery
                     avg_voltage = self.stats['voltage_sum'] / self.stats['voltage_count']
-                    
-                    # Calculate watt-hours for this update
-                    # current_consumed is in cAh (0.01 Ah), convert to Ah and multiply by voltage to get Wh
-                    wh_consumed = (abs(current_consumed) / 100.0) * avg_voltage
-                    
-                    # Check for battery swap (current_consumed reset and voltage increase)
-                    # Battery swap is detected when:
-                    # 1. The consumed current drops (battery was replaced with a fresh one)
-                    # 2. Voltage increases by more than 1V (fresh battery has higher voltage)
-                    # 3. We have a valid previous voltage reading
-                    if (current_consumed < self.stats['last_current_consumed'] and 
-                        current_voltage > (self.stats['last_voltage'] + 1.0) and 
-                        self.stats['last_voltage'] > 0):
-                        
-                        # Add current battery's watt-hours to accumulated total before resetting
-                        if self.stats['current_battery_wh'] > 0:
-                            self.stats['previous_batteries_wh'] += self.stats['current_battery_wh']
-                            logger.info(f"Battery swap: Adding {self.stats['current_battery_wh']:.2f}Wh to previous batteries total: {self.stats['previous_batteries_wh']:.2f}Wh")
-                        
-                        # Save the completed mission if we have one
-                        if self.stats['current_mission']['start_time'] is not None:
-                            cm = self.stats['current_mission']
-                            c_count = cm.get('current_count', 0)
-                            s_count = cm.get('speed_count', 0)
-                            mission = {
-                                'start_time': cm['start_time'],
-                                'end_time': self.get_local_time(),
-                                'start_voltage': cm['start_voltage'],
-                                'end_voltage': self.stats['last_voltage'],
-                                'start_cpu_temp': cm['start_cpu_temp'],
-                                'end_cpu_temp': self.stats['cpu_temp'],
-                                'total_ah': cm['total_ah'],
-                                'start_uptime': cm.get('start_uptime', self.stats['total_minutes']),
-                                'end_uptime': self.stats['total_minutes'],
-                                'voltage_min': cm.get('voltage_min', 0) or 0,
-                                'max_pwm_deviation': cm.get('max_pwm_deviation', 0) or 0,
-                                'distance_m': cm.get('distance_m', 0) or 0,
-                                'max_current_a': cm.get('max_current_a', 0) or 0,
-                                'avg_current_a': (cm.get('current_sum', 0) / c_count) if c_count > 0 else 0,
-                                'max_speed': cm.get('max_speed', 0) or 0,
-                                'avg_speed': (cm.get('speed_sum', 0) / s_count) if s_count > 0 else 0
-                            }
-                            self.missions.append(mission)
-                            self.save_mission(mission)
-                            logger.info(f"Mission completed: {mission}")
-                        
-                        # Start new mission
-                        self.stats['current_mission'] = {
-                            'start_time': self.get_local_time(),
-                            'start_voltage': current_voltage,
-                            'start_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
-                            'end_voltage': current_voltage,
-                            'end_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
-                            'min_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
-                            'max_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
-                            'total_ah': 0.0,
-                            'start_uptime': self.stats['total_minutes'],
-                            'end_uptime': self.stats['total_minutes'],
-                            'voltage_min': current_voltage,
-                            'max_pwm_deviation': 0.0,
-                            'distance_m': 0.0,
-                            'max_current_a': 0.0,
-                            'current_sum': 0.0,
-                            'current_count': 0,
-                            'max_speed': 0.0,
-                            'speed_sum': 0.0,
-                            'speed_count': 0
-                        }
-                        
-                        # Battery swap detected
-                        self.stats['battery_swaps'] += 1
-                        logger.info(f"Battery swap detected! Starting new mission.")
-                        
-                        # Reset voltage tracking for the new battery
-                        self.stats['voltage_sum'] = current_voltage
-                        self.stats['voltage_count'] = 1
-                        avg_voltage = current_voltage
-                        
-                        # Recalculate wh_consumed for the new battery (should be near zero)
-                        wh_consumed = (abs(current_consumed) / 100.0) * avg_voltage
-                    
-                    # Update current battery watt-hours (energy consumed from current battery)
-                    self.stats['current_battery_wh'] = wh_consumed
-                    
-                    # Update lifetime total (previous batteries + current battery)
-                    self.stats['total_wh_consumed'] = self.stats['previous_batteries_wh'] + self.stats['current_battery_wh']
-                    
-                    # Update current mission stats
-                    if self.stats['current_mission']['start_time'] is None:
-                        self.stats['current_mission'] = {
-                            'start_time': self.get_local_time(),
-                            'start_voltage': current_voltage,
-                            'start_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
-                            'end_voltage': current_voltage,
-                            'end_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
-                            'min_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
-                            'max_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
-                            'total_ah': 0.0,
-                            'start_uptime': self.stats['total_minutes'],
-                            'end_uptime': self.stats['total_minutes'],
-                            'voltage_min': current_voltage,
-                            'max_pwm_deviation': 0.0,
-                            'distance_m': 0.0,
-                            'max_current_a': 0.0,
-                            'current_sum': 0.0,
-                            'current_count': 0,
-                            'max_speed': 0.0,
-                            'speed_sum': 0.0,
-                            'speed_count': 0
-                        }
-                    
-                    # Update mission end values
-                    self.stats['current_mission']['end_voltage'] = current_voltage
-                    if current_cpu_temp > 0:
-                        self.stats['current_mission']['end_cpu_temp'] = current_cpu_temp
-                        cur_min = self.stats['current_mission'].get('min_cpu_temp', 0)
-                        cur_max = self.stats['current_mission'].get('max_cpu_temp', 0)
-                        if cur_min <= 0 or current_cpu_temp < cur_min:
-                            self.stats['current_mission']['min_cpu_temp'] = current_cpu_temp
-                        if current_cpu_temp > cur_max:
-                            self.stats['current_mission']['max_cpu_temp'] = current_cpu_temp
-                    self.stats['current_mission']['total_ah'] = abs(current_consumed) / 100.0
-                    self.stats['current_mission']['end_uptime'] = self.stats['total_minutes']
-                    # Track session voltage min for hard-use detection
-                    vmin = self.stats['current_mission'].get('voltage_min', 0) or 0
+
+                    last_consumed = self.stats['last_current_consumed']
+                    if consumed_mah is not None and last_consumed > 0 and consumed_mah < last_consumed:
+                        # The battery monitor's counters reset (hot swap or autopilot reboot)
+                        last_v = self.stats['last_voltage']
+                        if last_v > 0 and current_voltage > last_v + BATTERY_SWAP_VOLTAGE_THRESHOLD:
+                            self.stats['battery_swaps'] += 1
+                            logger.info("Battery swap detected! Starting new session.")
+                            self._close_session(m, now_iso, last_v, self.stats['cpu_temp'], self.stats['total_minutes'])
+                            m = self._start_session(now_iso, current_voltage, current_cpu_temp)
+                            self.stats['voltage_sum'] = current_voltage
+                            self.stats['voltage_count'] = 1
+                            avg_voltage = current_voltage
+                        else:
+                            # Same session continues: keep what was counted and measure from zero
+                            m['carried_ah'] = m.get('total_ah', 0.0)
+                            m['carried_wh'] = m.get('wh', 0.0)
+                        m['base_mah'] = 0.0
+                        m['base_hj'] = 0.0
+
+                    self._update_session_energy(m, consumed_mah, vehicle['energy_hj'], avg_voltage)
+
+                    if (m.get('start_voltage') or 0) <= 0:
+                        m['start_voltage'] = current_voltage  # Session began before voltage was available
+                    m['end_voltage'] = current_voltage
+                    vmin = m.get('voltage_min', 0) or 0
                     if vmin == 0 or current_voltage < vmin:
-                        self.stats['current_mission']['voltage_min'] = current_voltage
-                    
-                    # Log energy consumption
-                    logger.info(f"Energy - Current battery: {self.stats['current_battery_wh']:.2f}Wh, Previous batteries: {self.stats['previous_batteries_wh']:.2f}Wh, Lifetime total: {self.stats['total_wh_consumed']:.2f}Wh")
-                    
-                    # Update last values
-                    self.stats['last_current_consumed'] = current_consumed
+                        m['voltage_min'] = current_voltage
+
+                    if consumed_mah is not None:
+                        self.stats['last_current_consumed'] = consumed_mah
                     self.stats['last_voltage'] = current_voltage
-                else:
-                    # No vehicle/voltage (e.g. bench test without MAVLink) - still track session for usage history
-                    if self.stats['current_mission']['start_time'] is None:
-                        self.stats['current_mission'] = {
-                            'start_time': self.get_local_time(),
-                            'start_voltage': 0.0,
-                            'start_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
-                            'end_voltage': 0.0,
-                            'end_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
-                            'min_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
-                            'max_cpu_temp': current_cpu_temp if current_cpu_temp > 0 else 0.0,
-                            'total_ah': 0.0,
-                            'start_uptime': self.stats['total_minutes'],
-                            'end_uptime': self.stats['total_minutes'],
-                            'voltage_min': 0.0,
-                            'max_pwm_deviation': 0.0,
-                            'distance_m': 0.0,
-                            'max_current_a': 0.0,
-                            'current_sum': 0.0,
-                            'current_count': 0,
-                            'max_speed': 0.0,
-                            'speed_sum': 0.0,
-                            'speed_count': 0
-                        }
-                    else:
-                        if current_cpu_temp > 0:
-                            self.stats['current_mission']['end_cpu_temp'] = current_cpu_temp
-                            cur_min = self.stats['current_mission'].get('min_cpu_temp', 0)
-                            cur_max = self.stats['current_mission'].get('max_cpu_temp', 0)
-                            if cur_min <= 0 or current_cpu_temp < cur_min:
-                                self.stats['current_mission']['min_cpu_temp'] = current_cpu_temp
-                            if current_cpu_temp > cur_max:
-                                self.stats['current_mission']['max_cpu_temp'] = current_cpu_temp
-                        self.stats['current_mission']['end_uptime'] = self.stats['total_minutes']
-                
-                # Update CPU temperature if valid
+
                 if current_cpu_temp > 0:
+                    m['end_cpu_temp'] = current_cpu_temp
+                    cur_min = m.get('min_cpu_temp', 0)
+                    if cur_min <= 0 or current_cpu_temp < cur_min:
+                        m['min_cpu_temp'] = current_cpu_temp
+                    if current_cpu_temp > m.get('max_cpu_temp', 0):
+                        m['max_cpu_temp'] = current_cpu_temp
                     self.stats['cpu_temp'] = current_cpu_temp
-                
+                m['end_uptime'] = self.stats['total_minutes']
+
+                # Lifetime energy = all closed sessions + this one
+                self.stats['current_battery_wh'] = m.get('wh', 0.0)
+                self.stats['total_wh_consumed'] = self.stats['previous_batteries_wh'] + self.stats['current_battery_wh']
+                logger.info(f"Energy - Session: {self.stats['current_battery_wh']:.2f}Wh, Closed sessions: {self.stats['previous_batteries_wh']:.2f}Wh, Lifetime total: {self.stats['total_wh_consumed']:.2f}Wh")
+
                 # Persist current session so it survives power-off (enables usage history on next boot)
                 self.persist_current_session()
-                
+
                 # Write to CSV
-                self.write_stats_to_csv(time_status)
-            
+                self.write_stats_to_csv(time_status, timestamp=now_iso)
+
             if modes_changed:
                 self.save_modes()
-            
+
             # Update the last update time
             self.last_update_time = current_time
-            
+
             # Send stats to Mavlink
             self.send_stats_to_mavlink()
-        
+
         except Exception as e:
             logger.error(f"Error updating stats: {e}")
-    
+
     def get_local_time(self) -> datetime.datetime:
         """Get the local time from the system-information endpoint. Returns timezone-aware UTC."""
         try:
@@ -1436,7 +1441,7 @@ class OdometerService:
         # Fallback to system time if endpoint is not available
         return datetime.datetime.now(timezone.utc)
 
-    def write_stats_to_csv(self, time_status="normal", startup_detected=False):
+    def write_stats_to_csv(self, time_status="normal", startup_detected=False, timestamp: Optional[str] = None):
         """Write the current stats to the CSV file.
         
         Note: This method should be called while holding self.stats_lock or with
@@ -1445,14 +1450,14 @@ class OdometerService:
         # Only write valid CPU temperature values to CSV
         cpu_temp_value = str(self.stats['cpu_temp']) if self.stats['cpu_temp'] > 0 else ''
         
-        # Get local time from system-information endpoint
-        local_time = self.get_local_time()
+        if timestamp is None:
+            timestamp = self.get_local_time().isoformat()
         
         # Create row with all fields, converting all values to strings
         # Format: timestamp, total_minutes, armed_minutes, disarmed_minutes, dive_minutes,
         # battery_swaps, startups, voltage, depth, cpu_temp, wh_consumed, current_ah, total_distance_m, time_status
         row = [
-            local_time.isoformat(),
+            timestamp,
             str(self.stats['total_minutes']),
             str(self.stats['armed_minutes']),
             str(self.stats['disarmed_minutes']),
@@ -1492,188 +1497,153 @@ class OdometerService:
             return type_map.get(type_val.upper(), -1)
         return -1
     
+    def _get_message(self, msg_type: str) -> Optional[dict]:
+        """Fetch the latest msg_type from mavlink2rest. Returns None if unavailable or stale."""
+        start = self._endpoint_index
+        for idx in list(range(start, len(MAVLINK_ENDPOINTS))) + list(range(0, start)):
+            try:
+                resp = requests.get(f"{MAVLINK_ENDPOINTS[idx]}/{msg_type}", timeout=2)
+            except requests.exceptions.RequestException:
+                continue
+            # Any HTTP answer means this endpoint is up; a non-200 just means the message hasn't been received
+            self._endpoint_index = idx
+            if resp.status_code != 200:
+                return None
+            try:
+                data = resp.json()
+            except ValueError:
+                return None
+            return self._fresh_payload(msg_type, data)
+        return None
+
+    def _fresh_payload(self, msg_type: str, data: dict) -> Optional[dict]:
+        """Unwrap a mavlink2rest response, returning None if the message has stopped updating.
+
+        mavlink2rest keeps serving the last copy of every message after the autopilot goes quiet, so a
+        disconnected vehicle would otherwise look armed forever. Freshness is judged by the message counter
+        advancing (immune to clock jumps), falling back to the last_update timestamp on first sighting.
+        """
+        msg = data.get('message', data)
+        status_time = (data.get('status') or {}).get('time') or {}
+        counter = status_time.get('counter')
+        if counter is None:
+            return msg  # Endpoint format without freshness info; assume live
+        now = time.monotonic()
+        with self._freshness_lock:
+            seen = self._message_seen.get(msg_type)
+            if seen is None or seen[0] != counter:
+                changed_at = now
+                if seen is None:
+                    last_update = _parse_mavlink_time(status_time.get('last_update'))
+                    if last_update is not None:
+                        age = (datetime.datetime.now(timezone.utc) - last_update).total_seconds()
+                        changed_at = now - max(0.0, age)
+                seen = (counter, changed_at)
+                self._message_seen[msg_type] = seen
+        return msg if now - seen[1] <= STALE_MESSAGE_SECONDS else None
+
+    @staticmethod
+    def _is_armed(heartbeat: dict) -> bool:
+        base_mode_obj = heartbeat.get("base_mode", {})
+        base_mode = base_mode_obj.get("bits", 0) if isinstance(base_mode_obj, dict) else base_mode_obj
+        return bool(int(base_mode or 0) & ARMED_FLAG)
+
+    @staticmethod
+    def _has_3d_fix(gps: dict) -> bool:
+        fix = gps.get('fix_type', 0)
+        if isinstance(fix, dict):
+            fix = fix.get('type', '')
+        if isinstance(fix, str):
+            return any(k in fix for k in ('3D_FIX', 'DGPS', 'RTK', 'STATIC', 'PPP'))
+        return int(fix or 0) >= 3
+
     def get_ground_speed_m_s(self) -> float:
         """Get ground speed in m/s from GLOBAL_POSITION_INT (vx,vy in cm/s) or GPS_RAW_INT (vel in cm/s)."""
-        for endpoint in MAVLINK_ENDPOINTS:
-            try:
-                url = f"{endpoint}/GLOBAL_POSITION_INT"
-                resp = requests.get(url, timeout=2)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    msg = data.get('message', data)
-                    vx = int(msg.get('vx', 0) or 0)  # cm/s
-                    vy = int(msg.get('vy', 0) or 0)  # cm/s
-                    speed_cm_s = math.sqrt(vx * vx + vy * vy)
-                    return min(speed_cm_s / 100.0, MAX_PLAUSIBLE_SPEED_MS)
-            except Exception:
-                continue
-        try:
-            for endpoint in MAVLINK_ENDPOINTS:
-                url = f"{endpoint}/GPS_RAW_INT"
-                resp = requests.get(url, timeout=2)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    msg = data.get('message', data)
-                    vel = int(msg.get('vel', 0) or 0)  # cm/s
-                    return min(vel / 100.0, MAX_PLAUSIBLE_SPEED_MS)
-        except Exception:
-            pass
+        msg = self._get_message('GLOBAL_POSITION_INT')
+        if msg is not None:
+            vx = int(msg.get('vx', 0) or 0)  # cm/s
+            vy = int(msg.get('vy', 0) or 0)  # cm/s
+            return min(math.sqrt(vx * vx + vy * vy) / 100.0, MAX_PLAUSIBLE_SPEED_MS)
+        msg = self._get_message('GPS_RAW_INT')
+        if msg is not None and self._has_3d_fix(msg):
+            vel = int(msg.get('vel', 0) or 0)  # cm/s; 65535 = unknown
+            if vel != 65535:
+                return min(vel / 100.0, MAX_PLAUSIBLE_SPEED_MS)
         return 0.0
 
     def get_armed_status(self) -> bool:
-        """Lightweight check: is vehicle armed? Fetches HEARTBEAT only."""
-        for endpoint in MAVLINK_ENDPOINTS:
-            try:
-                resp = requests.get(f"{endpoint}/HEARTBEAT", timeout=2)
-                if resp.status_code != 200:
-                    continue
-                data = resp.json()
-                heartbeat = data.get('message', data)
-                base_mode_obj = heartbeat.get("base_mode", {})
-                base_mode = base_mode_obj.get("bits", 0) if isinstance(base_mode_obj, dict) else base_mode_obj
-                return bool(base_mode & ARMED_FLAG)
-            except Exception:
-                continue
-        return False
-    
-    def get_servo_output_raw(self) -> List[int]:
-        """Get PWM values from SERVO_OUTPUT_RAW (servo1_raw..servo16_raw in us). 
-        Channels 1-8 from primary port; 9-16 from aux port if available."""
-        values = [0] * 16
-        for endpoint in MAVLINK_ENDPOINTS:
-            try:
-                # Primary port: servo1_raw..servo8_raw
-                url = f"{endpoint}/SERVO_OUTPUT_RAW"
-                resp = requests.get(url, timeout=2)
-                if resp.status_code != 200:
-                    continue
-                data = resp.json()
-                msg = data.get('message', data)
-                for i in range(1, 9):
-                    key = f'servo{i}_raw'
-                    val = msg.get(key, 0)
-                    values[i - 1] = int(val) if val is not None else 0
-                # Try aux port for channels 9-16 (SERVO_OUTPUT_RAW.port=1 typically)
-                # Some MAVLink2Rest implementations include servo9_raw..servo16_raw in same message
-                for i in range(9, 17):
-                    key = f'servo{i}_raw'
-                    val = msg.get(key, 0)
-                    if val is not None:
-                        values[i - 1] = int(val)
-                return values
-            except Exception as e:
-                logger.debug(f"SERVO_OUTPUT_RAW from {endpoint}: {e}")
-                continue
+        """Lightweight check: is vehicle armed? Fetches HEARTBEAT only; a stale heartbeat counts as disarmed."""
+        heartbeat = self._get_message('HEARTBEAT')
+        return heartbeat is not None and self._is_armed(heartbeat)
+
+    def get_servo_output_raw(self) -> Optional[List[int]]:
+        """Get PWM values (us) for channels 1-16 from SERVO_OUTPUT_RAW, or None if unavailable/stale."""
+        msg = self._get_message('SERVO_OUTPUT_RAW')
+        if msg is None:
+            return None
+        values = []
+        for i in range(1, 17):
+            val = msg.get(f'servo{i}_raw')
+            values.append(int(val) if val is not None else 0)
         return values
-    
+
     def _mode_name(self, custom_mode: int, mav_type: int) -> str:
         """Map custom_mode to display name based on vehicle type."""
         if mav_type == MAV_TYPE_SUBMARINE:
             return ARDUSUB_MODES.get(custom_mode, f"MODE_{custom_mode}")
         if mav_type in (MAV_TYPE_GROUND_ROVER, MAV_TYPE_SURFACE_BOAT):
             return ARDUROVER_MODES.get(custom_mode, f"MODE_{custom_mode}")
-        return ARDUSUB_MODES.get(custom_mode, ARDUROVER_MODES.get(custom_mode, f"MODE_{custom_mode}"))
+        return f"MODE_{custom_mode}"
 
-    def get_vehicle_status(self) -> Tuple[float, bool, float, float, int, int, float, float]:
-        """Get vehicle status from Mavlink2Rest. Returns (voltage, is_armed, current_consumed, depth, mav_type, custom_mode, current_battery_a, groundspeed)."""
-        voltage = 0.0
-        is_armed = False
-        current_consumed = 0.0
-        depth = 0.0
-        mav_type = -1
-        custom_mode = 0
-        current_battery_a = 0.0
-        groundspeed = 0.0
-        
-        # Try each endpoint until we get a successful response
-        for endpoint in MAVLINK_ENDPOINTS:
-            try:
-                # Get battery status from BATTERY_STATUS message
-                battery_status_url = f"{endpoint}/BATTERY_STATUS"
-                logger.info(f"Trying to get BATTERY_STATUS from {battery_status_url}")
-                battery_status_response = requests.get(battery_status_url, timeout=2)
-                
-                if battery_status_response.status_code == 200:
-                    # The structure depends on which endpoint we're using
-                    battery_status_data = battery_status_response.json()
-                    
-                    # Try to handle different response formats
-                    if 'message' in battery_status_data:
-                        battery_status = battery_status_data.get("message", {})
-                    else:
-                        battery_status = battery_status_data
-                        
-                    # Extract voltage and current consumed
-                    if 'voltages' in battery_status and len(battery_status.get('voltages', [])) > 0:
-                        voltage = battery_status.get('voltages')[0] / 1000.0  # Convert from mV to V
-                    
-                    if 'current_consumed' in battery_status:
-                        # Handle negative values - they represent actual consumption
-                        current_consumed = abs(float(battery_status.get('current_consumed', 0)))
-                        logger.info(f"Raw current_consumed: {battery_status.get('current_consumed')}, Processed: {current_consumed}")
-                    if 'current_battery' in battery_status:
-                        # current_battery is in centiamps (cA); convert to Amps
-                        current_battery_a = abs(int(battery_status.get('current_battery', 0) or 0)) / 100.0
-                    
-                    # Get armed status from HEARTBEAT message
-                    heartbeat_url = f"{endpoint}/HEARTBEAT"
-                    heartbeat_response = requests.get(heartbeat_url, timeout=2)
-                    
-                    if heartbeat_response.status_code == 200:
-                        # Parse out the nested structure according to documentation
-                        heartbeat_data = heartbeat_response.json()
-                        
-                        # Try to handle different response formats
-                        if 'message' in heartbeat_data:
-                            heartbeat = heartbeat_data.get("message", {})
-                        else:
-                            heartbeat = heartbeat_data
-                        
-                        # Handle the nested structure - base_mode is an object with a 'bits' field
-                        base_mode_obj = heartbeat.get("base_mode", {})
-                        if isinstance(base_mode_obj, dict):
-                            base_mode = base_mode_obj.get("bits", 0)
-                        else:
-                            base_mode = base_mode_obj  # Fallback for older API versions
-                            
-                        is_armed = bool(base_mode & ARMED_FLAG)  # Check if the ARMED flag is set
-                        mav_type = self._parse_mav_type(heartbeat)
-                        custom_mode = int(heartbeat.get("custom_mode", 0) or 0)
-                    
-                    # Get depth from VFR_HUD message (alt field)
-                    # For underwater vehicles, alt is negative when submerged
-                    vfr_hud_url = f"{endpoint}/VFR_HUD"
-                    vfr_hud_response = requests.get(vfr_hud_url, timeout=2)
-                    
-                    if vfr_hud_response.status_code == 200:
-                        vfr_hud_data = vfr_hud_response.json()
-                        
-                        # Try to handle different response formats
-                        if 'message' in vfr_hud_data:
-                            vfr_hud = vfr_hud_data.get("message", {})
-                        else:
-                            vfr_hud = vfr_hud_data
-                        
-                        # Get altitude - negative values indicate depth underwater
-                        alt = float(vfr_hud.get("alt", 0.0))
-                        # Convert to positive depth (negative altitude = positive depth)
-                        depth = -alt if alt < 0 else 0.0
-                        logger.info(f"VFR_HUD alt: {alt}m, depth: {depth}m")
-                        groundspeed = min(abs(float(vfr_hud.get("groundspeed", 0.0))), MAX_PLAUSIBLE_SPEED_MS)
-                    
-                    logger.info(f"Successfully got vehicle status from {endpoint}: voltage={voltage}V, armed={is_armed}, current_consumed={current_consumed}mAh, depth={depth}m, mav_type={mav_type}")
-                    return voltage, is_armed, current_consumed, depth, mav_type, custom_mode, current_battery_a, groundspeed
-            
-            except requests.exceptions.RequestException as e:
-                logger.warning(f"Failed to connect to mavlink endpoint {endpoint}: {e}")
-                continue
-            except Exception as e:
-                logger.warning(f"Error processing mavlink data from {endpoint}: {e}")
-                continue
-        
-        logger.error(f"Could not get vehicle status from any mavlink endpoint")
-        return voltage, is_armed, current_consumed, depth, mav_type, custom_mode, current_battery_a, groundspeed
-    
+    def get_vehicle_status(self) -> Dict[str, Any]:
+        """Read the current vehicle state from mavlink2rest.
+
+        HEARTBEAT drives online/armed state, vehicle type and mode. BATTERY_STATUS and VFR_HUD are optional,
+        so vehicles without a battery monitor are still tracked. consumed_mah/energy_hj are None when the
+        autopilot doesn't report them.
+        """
+        status = {
+            'online': False, 'is_armed': False, 'mav_type': -1, 'custom_mode': 0,
+            'voltage': 0.0, 'consumed_mah': None, 'energy_hj': None, 'current_battery_a': 0.0,
+            'depth': 0.0, 'groundspeed': 0.0,
+        }
+        heartbeat = self._get_message('HEARTBEAT')
+        if heartbeat is None:
+            logger.warning("No fresh HEARTBEAT from mavlink2rest; treating vehicle as offline")
+            return status
+        status['online'] = True
+        status['is_armed'] = self._is_armed(heartbeat)
+        status['mav_type'] = self._parse_mav_type(heartbeat)
+        status['custom_mode'] = int(heartbeat.get("custom_mode", 0) or 0)
+
+        battery = self._get_message('BATTERY_STATUS')
+        if battery is not None:
+            voltages = battery.get('voltages') or []
+            if voltages and 0 < voltages[0] < 65535:  # UINT16_MAX = not reported
+                status['voltage'] = voltages[0] / 1000.0  # mV -> V
+            # MAVLink units: current_consumed mAh, energy_consumed hJ, current_battery cA; -1 = not provided
+            consumed = battery.get('current_consumed', -1)
+            if consumed is not None and consumed >= 0:
+                status['consumed_mah'] = float(consumed)
+            energy = battery.get('energy_consumed', -1)
+            if energy is not None and energy >= 0:
+                status['energy_hj'] = float(energy)
+            current = battery.get('current_battery', -1)
+            if current is not None and current != -1:
+                status['current_battery_a'] = abs(int(current)) / 100.0
+
+        vfr_hud = self._get_message('VFR_HUD')
+        if vfr_hud is not None:
+            # VFR_HUD.alt is depth (negative underwater) only on ArduSub; on boats it's GPS altitude,
+            # which routinely dips below zero near sea level and must not count as diving
+            alt = float(vfr_hud.get("alt", 0.0) or 0.0)
+            if status['mav_type'] == MAV_TYPE_SUBMARINE and alt < 0:
+                status['depth'] = -alt
+            status['groundspeed'] = min(abs(float(vfr_hud.get("groundspeed", 0.0) or 0.0)), MAX_PLAUSIBLE_SPEED_MS)
+
+        logger.info(f"Vehicle status: {status}")
+        return status
+
     def send_stats_to_mavlink(self):
         """Send odometer stats to Mavlink as named float values"""
         stats_to_send = {
@@ -1681,20 +1651,12 @@ class OdometerService:
             "ODO_WH": self.stats['total_wh_consumed'],
             "ODO_DIVE": self.stats['dive_minutes']  # Dive time in minutes
         }
-        
+
         for name, value in stats_to_send.items():
             self.send_to_mavlink(name, float(value))
-    
+
     def send_to_mavlink(self, name, value):
         """Send a named value float to Mavlink2Rest."""
-        # Create name array of exactly 10 characters (as required by MAVLink)
-        name_array = []
-        for i in range(10):
-            if i < len(name):
-                name_array.append(name[i])
-            else:
-                name_array.append('\u0000')
-        
         payload = {
             "header": {
                 "system_id": 255,
@@ -1705,34 +1667,95 @@ class OdometerService:
                 "type": "NAMED_VALUE_FLOAT",
                 "time_boot_ms": 0,
                 "value": value,
-                "name": name_array
+                # Exactly 10 characters, NUL-padded (as required by MAVLink)
+                "name": [name[i] if i < len(name) else '\u0000' for i in range(10)]
             }
         }
-        
-        # Try each POST endpoint - for the new endpoint structure, we need different URLs
-        post_endpoints = [
-            'http://host.docker.internal/mavlink2rest/mavlink', # Primary endpoint
-            'http://host.docker.internal:6040/v1/mavlink',      # Backup endpoint
-            'http://192.168.2.2/mavlink2rest/mavlink',          # Standard BlueOS IP
-            'http://localhost/mavlink2rest/mavlink',
-            'http://blueos.local/mavlink2rest/mavlink'
-        ]
-        
-        for post_url in post_endpoints:
+        if self._post_message(payload):
+            logger.info(f"Successfully sent {name}={value} to Mavlink2Rest")
+            return True
+        logger.error(f"Could not send {name}={value} to any Mavlink2Rest endpoint")
+        return False
+
+    def _post_message(self, payload: dict) -> bool:
+        """POST a MAVLink message through mavlink2rest, starting with the endpoint that last answered."""
+        start = self._endpoint_index
+        for idx in list(range(start, len(MAVLINK_POST_ENDPOINTS))) + list(range(0, start)):
+            post_url = MAVLINK_POST_ENDPOINTS[idx]
             try:
                 response = requests.post(post_url, json=payload, timeout=2.0)
                 if response.status_code == 200:
-                    logger.info(f"Successfully sent {name}={value} to Mavlink2Rest via {post_url}")
                     return True
-                else:
-                    logger.warning(f"Failed to send to {post_url} with status code {response.status_code}")
-                    continue  # Try next endpoint
+                logger.warning(f"Failed to send to {post_url} with status code {response.status_code}")
             except Exception as e:
-                logger.warning(f"Failed to send {name}={value} to {post_url}: {e}")
-                continue  # Try next endpoint
-        
-        logger.error(f"Could not send {name}={value} to any Mavlink2Rest endpoint")
+                logger.warning(f"Failed to send {payload['message']['type']} to {post_url}: {e}")
         return False
+
+    def _read_param(self, param_id: str, timeout: float = 3.0) -> Optional[float]:
+        """Read one autopilot parameter via PARAM_REQUEST_READ / PARAM_VALUE. Returns None on timeout."""
+        payload = {
+            "header": {"system_id": 255, "component_id": 0, "sequence": 0},
+            "message": {
+                "type": "PARAM_REQUEST_READ",
+                "target_system": 1,
+                "target_component": 1,
+                "param_id": [param_id[i] if i < len(param_id) else '\u0000' for i in range(16)],
+                "param_index": -1
+            }
+        }
+        if not self._post_message(payload):
+            return None
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            time.sleep(0.2)
+            msg = self._get_message('PARAM_VALUE')
+            if msg is None:
+                continue
+            name = msg.get('param_id', '')
+            if isinstance(name, list):
+                name = ''.join(name)
+            if name.rstrip('\u0000') == param_id:
+                return float(msg.get('param_value', 0))
+        return None
+
+    def detect_thruster_channels(self, mav_type: int) -> Optional[List[int]]:
+        """Map thrusters/motors to servo output channels from SERVOn_FUNCTION params.
+
+        Returns the channel for thruster 1, 2, ... or None if params can't be read or no motors are found.
+        Sub: thruster n is the channel set to Motor n. Boat: thruster 1 = starboard (ThrottleRight),
+        thruster 2 = port (ThrottleLeft), matching get_layout_config.
+        """
+        functions = {}
+        for ch in range(1, 17):
+            value = self._read_param(f'SERVO{ch}_FUNCTION')
+            if value is None:
+                logger.info(f"Could not read SERVO{ch}_FUNCTION; keeping current thruster mapping")
+                return None
+            functions[ch] = int(value)
+        if mav_type == MAV_TYPE_SUBMARINE:
+            motors = {SERVO_FUNCTION_MOTORS[f]: ch for ch, f in functions.items() if f in SERVO_FUNCTION_MOTORS}
+            return [motors[n] for n in sorted(motors)] or None
+        if mav_type in (MAV_TYPE_GROUND_ROVER, MAV_TYPE_SURFACE_BOAT):
+            right = next((ch for ch, f in functions.items() if f == SERVO_FUNCTION_THROTTLE_RIGHT), None)
+            left = next((ch for ch, f in functions.items() if f == SERVO_FUNCTION_THROTTLE_LEFT), None)
+            return [right, left] if right and left else None
+        return None
+
+    def thruster_detect_loop(self):
+        """Periodically refresh the thruster -> channel mapping from autopilot params."""
+        while not self.stop_event.is_set():
+            delay = 30
+            try:
+                heartbeat = self._get_message('HEARTBEAT')
+                mav_type = self._parse_mav_type(heartbeat) if heartbeat else -1
+                if self.get_thruster_count_from_mav_type(mav_type) > 0:
+                    channels = self.detect_thruster_channels(mav_type)
+                    if channels:
+                        self._apply_thruster_layout(mav_type, channels, 'params')
+                        delay = THRUSTER_DETECT_INTERVAL
+            except Exception as e:
+                logger.warning(f"Thruster detection: {e}")
+            self.stop_event.wait(delay)
 
     def get_cpu_temperature(self) -> float:
         """Get the current CPU temperature in Celsius"""
@@ -1793,6 +1816,7 @@ def get_accessories():
                 'id': aid,
                 'name': acc.get('name', ''),
                 'channel': acc.get('channel', 1),
+                'off_pwm': acc.get('off_pwm', ACCESSORY_DEFAULT_OFF_PWM),
                 'run_minutes': acc.get('run_minutes', 0),
                 'avg_pwm_armed': avg_pwm
             })
@@ -1872,6 +1896,7 @@ def add_maintenance():
     reset_run_hours = bool(data.get('reset_run_hours', False))
     device_name = data.get('device_name', '').strip()
     device_channel = data.get('device_channel', 1)
+    device_off_pwm = data.get('device_off_pwm', ACCESSORY_DEFAULT_OFF_PWM)
     device_id = data.get('device_id', '').strip()
     reset_accessory = bool(data.get('reset_accessory', False))
     
@@ -1882,7 +1907,11 @@ def add_maintenance():
         if not device_name:
             return jsonify({"status": "error", "message": "Device name is required for Add Device"}), 400
         device_channel = max(1, min(16, int(device_channel) if device_channel else 1))
-        aid = odometer_service.add_accessory(device_name, device_channel)
+        try:
+            device_off_pwm = max(800, min(2200, int(device_off_pwm)))
+        except (TypeError, ValueError):
+            device_off_pwm = ACCESSORY_DEFAULT_OFF_PWM
+        aid = odometer_service.add_accessory(device_name, device_channel, device_off_pwm)
         details = f"Added {device_name} on channel {device_channel}"
     elif not details:
         return jsonify({"status": "error", "message": "Details are required"}), 400
