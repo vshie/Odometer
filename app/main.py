@@ -169,7 +169,7 @@ REGISTER_SERVICE = {
     "description": "Track vehicle usage statistics, armed time, battery swaps, and maintenance history with beautiful visualizations",
     "icon": "mdi-counter",
     "company": "Blue Robotics",
-    "version": "0.1.0",
+    "version": "2.0.0",
     "webpage": "https://github.com/vshie/Odometer",
     "api": "https://github.com/bluerobotics/BlueOS-docker",
     "extras": {"cockpit": "/cockpit_extras.json"}

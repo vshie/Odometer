@@ -13,14 +13,17 @@ on:
 jobs:
   deploy-docker-image:
     runs-on: ubuntu-latest
+    # needed to attach the image tarballs to a GitHub release on tag pushes
+    permissions:
+      contents: write
     steps:
       - name: Deploy BlueOS Extension
-        uses: BlueOS-community/Deploy-BlueOS-Extension@v1.2.0
+        uses: BlueOS-community/Deploy-BlueOS-Extension@v1
         with:
           docker-username: ${{ secrets.DOCKER_USERNAME }}
           docker-password: ${{ secrets.DOCKER_PASSWORD }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          image-name: ${{ vars.IMAGE_NAME || 'blueos-odometer' }}
+          image-name: 'odometer'
           author: ${{ vars.MY_NAME }}
           author-email: ${{ vars.MY_EMAIL }}
           maintainer: ${{ vars.ORG_NAME }}

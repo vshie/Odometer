@@ -48,10 +48,7 @@ EXPOSE 8765/tcp
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:80/stats || exit 1
 
-LABEL version="1.0.1"
-
-ARG IMAGE_NAME
-
+LABEL version="2.0.0"
 LABEL permissions='\
 {\
   "ExposedPorts": {\
@@ -78,29 +75,26 @@ LABEL permissions='\
     }\
   }\
 }'
-
-ARG AUTHOR=Tony
-ARG AUTHOR_EMAIL=tony@bluerobotics.com
 LABEL authors='[\
     {\
-        "name": "TONY",\
-        "email": "${AUTHOR_EMAIL}"\
+        "name": "Tony White",\
+        "email": "tonywhite@bluerobotics.com"\
     }\
 ]'
-
-ARG MAINTAINER
-ARG MAINTAINER_EMAIL
 LABEL company='{\
         "about": "",\
-        "name": "Tony",\
-        "email": "tony@bluerobotics.com"\
+        "name": "Blue Robotics",\
+        "email": "support@bluerobotics.com"\
     }'
-LABEL type="utility"
-ARG REPO
-ARG OWNER
-LABEL readme='https://github.com/vshie/Odometer/README.md'
+LABEL type="tool"
+LABEL tags='[\
+        "maintenance",\
+        "logging"\
+    ]'
+LABEL readme='https://raw.githubusercontent.com/vshie/Odometer/{tag}/README.md'
 LABEL links='{\
-        "source": "https://github.com/vshie/Odometer"\
+        "website": "https://github.com/vshie/Odometer",\
+        "support": "https://github.com/vshie/Odometer/issues"\
     }'
 LABEL requirements="core >= 1.1"
 

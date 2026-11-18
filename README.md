@@ -7,7 +7,7 @@ The BlueOS Odometer Extension tracks your vehicle's usage stats and maintenance 
 - **Uptime Tracking**: Counts total minutes of vehicle operation
 - **Armed/Disarmed Time**: Tracks how long your vehicle has been in armed vs. disarmed states
 - **Per-Thruster Run Hours**: Individual run-hour tracking for each thruster
-- **Thruster Duty Cycle**: Average PWM value when armed (duty-cycle indicator)
+- **Thruster Duty Cycle**: Average throttle per thruster while armed
 - **Battery Monitoring**: Records battery voltage and detects battery swaps
 - **Maintenance Log**: Add and track repair, replacement, and maintenance events, plus BlueOS Self Test runs imported automatically
 - **Data Export**: Download all collected data as CSV files, or a PDF report
@@ -33,9 +33,11 @@ Once launched in the Extensions Manager, install this extension directly from th
 To install Odometer manually from the BlueOS Extension Manager, choose **Install from Scratch** from the + icon in the lower right of the Installed Extensions page and use:
 
 ```text
-Image: vshie/blueos-blueos-odometer
-Tag: beta
+Image: vshie/blueos-odometer
+Tag: 2.0.0
 ```
+
+(Use the `beta` tag for the latest development build.)
 
 Copy and paste this permissions JSON when BlueOS asks for extension permissions:
 
@@ -171,8 +173,7 @@ The extension offers a small Cockpit widget (listed in Cockpit's edit menu with 
 
 ## Requirements
 
-- BlueOS version 1.3.1 or higher
-- OR A vehicle with a functioning Mavlink2Rest API (??)
+- BlueOS 1.3.1 or newer, with an ArduPilot autopilot (ArduSub or ArduRover) connected through Mavlink2Rest
 
 ## License
 
