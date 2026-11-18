@@ -4,6 +4,9 @@ import math
 import os
 import re
 import csv
+import shutil
+import socket
+import struct
 import time
 import json
 import datetime
@@ -14,7 +17,8 @@ import threading
 import asyncio
 import requests
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
+from urllib.parse import urlparse
 from flask import Flask, jsonify, request, send_from_directory, send_file
 
 from pdf_report import generate_report
@@ -62,22 +66,12 @@ SERVO_FUNCTION_THROTTLE_LEFT = 73
 SERVO_FUNCTION_THROTTLE_RIGHT = 74
 THRUSTER_DETECT_INTERVAL = 600  # Re-read SERVOn_FUNCTION params every 10 minutes
 
-# Define potential Mavlink endpoints to try
-MAVLINK_ENDPOINTS = [
-    'http://host.docker.internal/mavlink2rest/mavlink/vehicles/1/components/1/messages',  # Primary endpoint
-    'http://host.docker.internal:6040/v1/mavlink',  # Backup endpoint
-    'http://192.168.2.2/mavlink2rest/mavlink/vehicles/1/components/1/messages',  # Standard BlueOS IP
-    'http://localhost/mavlink2rest/mavlink/vehicles/1/components/1/messages',
-    'http://blueos.local/mavlink2rest/mavlink/vehicles/1/components/1/messages'
-]
-# Matching endpoints for POSTing messages (same order as MAVLINK_ENDPOINTS)
-MAVLINK_POST_ENDPOINTS = [
-    'http://host.docker.internal/mavlink2rest/mavlink',
-    'http://host.docker.internal:6040/v1/mavlink',
-    'http://192.168.2.2/mavlink2rest/mavlink',
-    'http://localhost/mavlink2rest/mavlink',
-    'http://blueos.local/mavlink2rest/mavlink'
-]
+# Hosts where BlueOS may be reachable from inside this container, in order of preference; the container's
+# default gateway (the Docker host) is added at runtime. Not localhost: inside this container that is the
+# extension itself, whose catch-all route answers every path with index.html.
+BLUEOS_HOSTS = ['host.docker.internal', '192.168.2.2', 'blueos.local']
+AUTOPILOT_COMPONENT_ID = 1
+SYSID_DISCOVERY_INTERVAL = 10  # Seconds between attempts to find the autopilot's system ID
 STALE_MESSAGE_SECONDS = 10.0  # mavlink2rest serves its last cached message forever; older than this = vehicle offline
 
 UPDATE_INTERVAL = 60  # Update every 60 seconds (1 minute)
@@ -91,6 +85,10 @@ DIVE_DEPTH_THRESHOLD = 1.0  # Depth threshold in meters to count as diving
 BATTERY_SWAP_VOLTAGE_THRESHOLD = 1.0  # Voltage increase (V) to detect battery swap on reconnect
 MAX_PLAUSIBLE_SPEED_MS = 15.0  # Speed cap (m/s) to filter GPS glitches
 MIN_SPEED_FOR_DISTANCE_MS = 0.2  # Ignore velocity noise below this when integrating distance
+SCHEMA_FILE = DATA_DIR / 'schema.json'
+SCHEMA_VERSION = 2  # v2: Ah history corrected for the cAh/mAh bug, per-session Wh, lifetime energy rebuilt
+AH_INFLATION_RATIO = 10 ** 0.5  # Recorded/expected Ah above this (geometric midpoint of 1x and 10x) = inflated
+MIN_AH_TO_JUDGE = 0.2  # Sessions expected to use less than this can't be judged on their own
 PWM_NEUTRAL = 1500  # Thruster/motor neutral PWM (us)
 PWM_ACTIVE_DEADBAND = 25  # |pwm - neutral| above this (us) counts as running
 ACCESSORY_DEFAULT_OFF_PWM = 1100  # Typical "off" output for lights; configurable per accessory
@@ -122,6 +120,21 @@ def _atomic_write_json(path: Path, data: Any) -> None:
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
+
+
+def _default_gateway() -> Optional[str]:
+    """IPv4 default gateway of this container (the Docker host running BlueOS), from /proc/net/route."""
+    try:
+        with open('/proc/net/route') as f:
+            next(f)  # Header
+            for line in f:
+                fields = line.split()
+                # Destination 0.0.0.0 with the RTF_GATEWAY flag is the default route; addresses are little-endian hex
+                if len(fields) > 3 and fields[1] == '00000000' and int(fields[3], 16) & 0x2:
+                    return socket.inet_ntoa(struct.pack('<L', int(fields[2], 16)))
+    except (OSError, ValueError, StopIteration):
+        pass
+    return None
 
 
 def _parse_mavlink_time(value: Any) -> Optional[datetime.datetime]:
@@ -243,8 +256,20 @@ class OdometerService:
         self._next_accessory_id = 1
         self.last_update_time = time.time()
         self.minutes_since_update = 0
-        self._endpoint_index = 0  # Index into MAVLINK_ENDPOINTS of the endpoint that last answered
-        self._message_seen = {}  # {msg_type: (counter, monotonic time the counter last changed)}
+        # Connection discovery: which BlueOS host/mavlink2rest URL answers, and the autopilot's system ID
+        hosts = BLUEOS_HOSTS[:1] + [h for h in [_default_gateway()] if h] + BLUEOS_HOSTS[1:]
+        self._blueos_hosts = list(dict.fromkeys(hosts))
+        self._mavlink_endpoints = [url for h in self._blueos_hosts
+                                   for url in (f'http://{h}/mavlink2rest/mavlink', f'http://{h}:6040/mavlink')]
+        self._endpoint_index = 0  # Index into _mavlink_endpoints of the endpoint that last answered
+        self._active_endpoint = None  # URL of the mavlink2rest endpoint in use; None while unreachable
+        self._unreachable_logged = False
+        self._sysid = None  # Autopilot MAVLink system ID (SYSID_THISMAV), discovered from mavlink2rest
+        self._sysid_checked = 0.0
+        self._autopilot_missing_logged = False
+        self._vehicle_online = None  # Last logged online state, to log transitions only
+        logger.info(f"BlueOS host candidates: {self._blueos_hosts}")
+        self._message_seen = {}  # {(sysid, msg_type): (counter, monotonic time the counter last changed)}
         self._freshness_lock = threading.Lock()
         self.setup_csv_files()
         self.load_stats()
@@ -254,6 +279,7 @@ class OdometerService:
         self.load_accessories()
         self._auto_populate_vehicle_name()
         self.close_previous_session_on_startup()
+        self.migrate_energy_history()
         self.detect_startup()
         
         # Start the update thread
@@ -584,12 +610,7 @@ class OdometerService:
 
     def get_blueos_vehicle_name(self) -> str:
         """Fetch vehicle name from the BlueOS Beacon service. Returns name or empty string."""
-        beacon_hosts = [
-            'http://host.docker.internal',
-            'http://192.168.2.2',
-            'http://localhost',
-            'http://blueos.local',
-        ]
+        beacon_hosts = list(dict.fromkeys([self._blueos_base_url()] + [f'http://{h}' for h in self._blueos_hosts]))
         for host in beacon_hosts:
             try:
                 resp = requests.get(f"{host}/beacon/v1.0/vehicle_name", timeout=2)
@@ -932,6 +953,66 @@ class OdometerService:
         except Exception as e:
             logger.error(f"Error closing previous session on startup: {e}")
     
+    def migrate_energy_history(self) -> None:
+        """One-time (schema v2) fix for history recorded while current_consumed was read as cAh (10x the Ah).
+
+        Vehicles installed the affected build at different times, so each session is judged on its own:
+        recorded Ah vs. average current x duration (current was always decoded correctly). Sessions too
+        small to judge take the verdict of the nearest judged session. Per-session Wh is then filled in and
+        lifetime energy rebuilt from all sessions. Original files are backed up first.
+        """
+        try:
+            schema = json.loads(SCHEMA_FILE.read_text()) if SCHEMA_FILE.exists() else {}
+        except (OSError, ValueError):
+            schema = {}
+        if schema.get('schema_version', 1) >= SCHEMA_VERSION:
+            return
+
+        legacy = [i for i, m in enumerate(self.missions) if m.get('wh') is None]
+        record = {'schema_version': SCHEMA_VERSION, 'migrated_at': datetime.datetime.now(timezone.utc).isoformat()}
+        if legacy:
+            backup_dir = DATA_DIR / f"backup-v1-{datetime.datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"
+            backup_dir.mkdir(exist_ok=True)
+            for f in DATA_DIR.iterdir():
+                if f.is_file() and f.suffix in ('.csv', '.json'):
+                    shutil.copy2(f, backup_dir / f.name)
+
+            verdicts = {}  # mission index -> True if Ah was inflated 10x
+            for i in legacy:
+                m = self.missions[i]
+                hours = max(0, int(m.get('end_uptime', 0) or 0) - int(m.get('start_uptime', 0) or 0)) / 60.0
+                expected_ah = float(m.get('avg_current_a', 0) or 0) * hours
+                if expected_ah >= MIN_AH_TO_JUDGE and (m.get('total_ah') or 0) > 0:
+                    verdicts[i] = m['total_ah'] / expected_ah > AH_INFLATION_RATIO
+            corrected = []
+            lifetime_wh = 0.0
+            for i, m in enumerate(self.missions):
+                if i in legacy:
+                    inflated = verdicts.get(i)
+                    if inflated is None and verdicts:
+                        inflated = verdicts[min(verdicts, key=lambda j: abs(j - i))]
+                    if inflated and (m.get('total_ah') or 0) > 0:
+                        m['total_ah'] = m['total_ah'] / 10.0
+                        corrected.append(m.get('start_time'))
+                    volts = [v for v in (m.get('start_voltage', 0), m.get('end_voltage', 0)) if 1.0 < (v or 0) < 65.0]
+                    m['wh'] = (m.get('total_ah') or 0) * (sum(volts) / len(volts)) if volts else 0.0
+                lifetime_wh += m.get('wh') or 0.0
+            self._rewrite_missions_csv()
+
+            with self.stats_lock:
+                self.stats['previous_batteries_wh'] = lifetime_wh
+                self.stats['total_wh_consumed'] = lifetime_wh
+                self.write_stats_to_csv("migrated")
+            note = (f"Odometer v2 data migration: corrected Ah on {len(corrected)} of {len(legacy)} older sessions "
+                    f"(recorded 10x too high), filled in per-session Wh, and rebuilt lifetime energy to "
+                    f"{lifetime_wh:.0f} Wh. Original files backed up to {backup_dir.name}.")
+            with open(MAINTENANCE_CSV, 'a', newline='') as f:
+                csv.writer(f).writerow([self.get_local_time().isoformat(), 'Note', note, '', 'false', '', '', '', 'false'])
+            logger.info(note)
+            record.update({'backup': backup_dir.name, 'legacy_sessions': len(legacy),
+                           'ah_corrected_sessions': corrected, 'lifetime_wh': lifetime_wh})
+        _atomic_write_json(SCHEMA_FILE, record)
+
     def cleanup_csv(self):
         """Clean up the CSV file by removing bad rows and ensuring proper format"""
         try:
@@ -1261,16 +1342,13 @@ class OdometerService:
             'max_speed': float(session.get('max_speed', 0) or 0),
             'avg_speed': (float(session.get('speed_sum', 0) or 0) / s_count) if s_count > 0 else 0.0
         }
-        if 'wh' in session:
-            mission['wh'] = float(session.get('wh') or 0)
-        else:
-            # Session persisted by an older version without per-session Wh: estimate as the UI did
-            avg_v = (mission['start_voltage'] + end_voltage) / 2
-            mission['wh'] = mission['total_ah'] * avg_v if avg_v > 0 else 0.0
+        # A session persisted by a pre-v2 version has no Wh, and its Ah may be inflated: leave both to
+        # migrate_energy_history, which runs right after this at startup
+        mission['wh'] = float(session['wh']) if session.get('wh') is not None else None
         mission['hard_use'] = self._is_hard_use(mission)
         self.missions.append(mission)
         self.save_mission(mission)
-        self.stats['previous_batteries_wh'] += mission['wh']
+        self.stats['previous_batteries_wh'] += mission['wh'] or 0.0
         logger.info(f"Session closed: {mission}")
         return mission
 
@@ -1431,7 +1509,7 @@ class OdometerService:
     def get_local_time(self) -> datetime.datetime:
         """Get the local time from the system-information endpoint. Returns timezone-aware UTC."""
         try:
-            response = requests.get('http://host.docker.internal/system-information/system/unix_time_seconds', timeout=2)
+            response = requests.get(f'{self._blueos_base_url()}/system-information/system/unix_time_seconds', timeout=2)
             if response.status_code == 200:
                 unix_time = float(response.text)
                 return datetime.datetime.fromtimestamp(unix_time, tz=timezone.utc)
@@ -1497,26 +1575,134 @@ class OdometerService:
             return type_map.get(type_val.upper(), -1)
         return -1
     
-    def _get_message(self, msg_type: str) -> Optional[dict]:
-        """Fetch the latest msg_type from mavlink2rest. Returns None if unavailable or stale."""
+    def _request(self, method: str, path: str, **kwargs) -> Optional[requests.Response]:
+        """Send a request to mavlink2rest, starting with the endpoint that last answered."""
+        endpoints = self._mavlink_endpoints
         start = self._endpoint_index
-        for idx in list(range(start, len(MAVLINK_ENDPOINTS))) + list(range(0, start)):
+        for idx in list(range(start, len(endpoints))) + list(range(0, start)):
             try:
-                resp = requests.get(f"{MAVLINK_ENDPOINTS[idx]}/{msg_type}", timeout=2)
+                resp = requests.request(method, endpoints[idx] + path, timeout=2, **kwargs)
             except requests.exceptions.RequestException:
                 continue
-            # Any HTTP answer means this endpoint is up; a non-200 just means the message hasn't been received
             self._endpoint_index = idx
-            if resp.status_code != 200:
-                return None
-            try:
-                data = resp.json()
-            except ValueError:
-                return None
-            return self._fresh_payload(msg_type, data)
+            self._unreachable_logged = False
+            if self._active_endpoint != endpoints[idx]:
+                logger.info(f"Using mavlink2rest at {endpoints[idx]}"
+                            + (f" (was {self._active_endpoint})" if self._active_endpoint else ""))
+                self._active_endpoint = endpoints[idx]
+            return resp
+        if not self._unreachable_logged:
+            logger.warning(f"mavlink2rest unreachable; tried {endpoints}")
+            self._unreachable_logged = True
+        self._active_endpoint = None
         return None
 
-    def _fresh_payload(self, msg_type: str, data: dict) -> Optional[dict]:
+    def _blueos_base_url(self) -> str:
+        """Web root of the BlueOS host mavlink2rest answered on (for beacon, system-information)."""
+        if self._active_endpoint:
+            parsed = urlparse(self._active_endpoint)
+            return f"{parsed.scheme}://{parsed.hostname}"
+        return f"http://{self._blueos_hosts[0]}"
+
+    def _autopilot_sysid(self) -> Optional[int]:
+        """The autopilot's MAVLink system ID. Not always 1 (SYSID_THISMAV is user-configurable), so it's
+        discovered from mavlink2rest: the system whose component 1 sends a fresh, non-INVALID autopilot
+        HEARTBEAT, preferring the most recently updated one."""
+        if self._sysid is not None:
+            return self._sysid
+        now = time.monotonic()
+        if now - self._sysid_checked < SYSID_DISCOVERY_INTERVAL:
+            return None
+        self._sysid_checked = now
+        resp = self._request('GET', '/vehicles')
+        if resp is None or resp.status_code != 200:
+            return None
+        try:
+            vehicles = resp.json()
+        except ValueError:
+            return None
+        best = None
+        for sysid, vehicle in vehicles.items():
+            component = (vehicle.get('components') or {}).get(str(AUTOPILOT_COMPONENT_ID)) or {}
+            heartbeat = (component.get('messages') or {}).get('HEARTBEAT')
+            if not heartbeat:
+                continue
+            autopilot = (heartbeat.get('message') or {}).get('autopilot')
+            if isinstance(autopilot, dict):
+                autopilot = autopilot.get('type')
+            if autopilot in ('MAV_AUTOPILOT_INVALID', 8, None):
+                continue
+            last_update = _parse_mavlink_time(((heartbeat.get('status') or {}).get('time') or {}).get('last_update'))
+            if last_update is not None and \
+                    (datetime.datetime.now(timezone.utc) - last_update).total_seconds() > STALE_MESSAGE_SECONDS:
+                continue  # mavlink2rest still lists systems that have gone quiet
+            if best is None or (last_update and (best[1] is None or last_update > best[1])):
+                best = (int(sysid), last_update)
+        if best is None:
+            if not self._autopilot_missing_logged:
+                logger.warning(f"No autopilot HEARTBEAT on mavlink2rest at {self._active_endpoint}; "
+                               f"systems present: {sorted(vehicles, key=int)}")
+                self._autopilot_missing_logged = True
+            return None
+        self._sysid = best[0]
+        self._autopilot_missing_logged = False
+        logger.info(f"Autopilot found at MAVLink system ID {self._sysid} via {self._active_endpoint}")
+        return self._sysid
+
+    def _lose_autopilot(self, reason: str) -> None:
+        """Forget the autopilot's system ID so it is rediscovered (it may have been renumbered)."""
+        if self._sysid is not None:
+            logger.warning(f"Autopilot at MAVLink system ID {self._sysid} {reason}; rediscovering")
+            self._sysid = None
+
+    def connection_status(self) -> Dict[str, Any]:
+        """How the extension is reaching the vehicle, for the API/UI."""
+        return {
+            'mavlink_endpoint': self._active_endpoint,
+            'autopilot_sysid': self._sysid,
+            'vehicle_online': bool(self._vehicle_online),
+            'blueos_hosts': self._blueos_hosts,
+        }
+
+    def _get_message(self, msg_type: str) -> Optional[dict]:
+        """Fetch the latest msg_type from the autopilot via mavlink2rest. Returns None if unavailable or stale."""
+        msg = self._fetch_message(msg_type)
+        if msg_type == 'HEARTBEAT':
+            self._set_vehicle_online(msg is not None)
+        return msg
+
+    def _set_vehicle_online(self, online: bool) -> None:
+        """Record online state, logging only transitions."""
+        if online == self._vehicle_online:
+            return
+        if self._vehicle_online is None and not online:
+            self._vehicle_online = False  # Still starting up; discovery logs if no autopilot is found
+            return
+        if online:
+            logger.info(f"Vehicle online: autopilot system ID {self._sysid} via {self._active_endpoint}")
+        else:
+            logger.warning("Vehicle offline: no fresh autopilot HEARTBEAT; counting time as disarmed")
+        self._vehicle_online = online
+
+    def _fetch_message(self, msg_type: str) -> Optional[dict]:
+        sysid = self._autopilot_sysid()
+        if sysid is None:
+            return None
+        resp = self._request('GET', f"/vehicles/{sysid}/components/{AUTOPILOT_COMPONENT_ID}/messages/{msg_type}")
+        if resp is None or resp.status_code != 200:
+            if msg_type == 'HEARTBEAT' and resp is not None:
+                self._lose_autopilot(f"has no HEARTBEAT (HTTP {resp.status_code})")
+            return None
+        try:
+            data = resp.json()
+        except ValueError:
+            return None
+        msg = self._fresh_payload((sysid, msg_type), data)
+        if msg is None and msg_type == 'HEARTBEAT':
+            self._lose_autopilot(f"stopped sending HEARTBEAT for over {STALE_MESSAGE_SECONDS:.0f} s")
+        return msg
+
+    def _fresh_payload(self, key: Tuple[int, str], data: dict) -> Optional[dict]:
         """Unwrap a mavlink2rest response, returning None if the message has stopped updating.
 
         mavlink2rest keeps serving the last copy of every message after the autopilot goes quiet, so a
@@ -1530,7 +1716,7 @@ class OdometerService:
             return msg  # Endpoint format without freshness info; assume live
         now = time.monotonic()
         with self._freshness_lock:
-            seen = self._message_seen.get(msg_type)
+            seen = self._message_seen.get(key)
             if seen is None or seen[0] != counter:
                 changed_at = now
                 if seen is None:
@@ -1539,7 +1725,7 @@ class OdometerService:
                         age = (datetime.datetime.now(timezone.utc) - last_update).total_seconds()
                         changed_at = now - max(0.0, age)
                 seen = (counter, changed_at)
-                self._message_seen[msg_type] = seen
+                self._message_seen[key] = seen
         return msg if now - seen[1] <= STALE_MESSAGE_SECONDS else None
 
     @staticmethod
@@ -1609,7 +1795,6 @@ class OdometerService:
         }
         heartbeat = self._get_message('HEARTBEAT')
         if heartbeat is None:
-            logger.warning("No fresh HEARTBEAT from mavlink2rest; treating vehicle as offline")
             return status
         status['online'] = True
         status['is_armed'] = self._is_armed(heartbeat)
@@ -1641,7 +1826,7 @@ class OdometerService:
                 status['depth'] = -alt
             status['groundspeed'] = min(abs(float(vfr_hud.get("groundspeed", 0.0) or 0.0)), MAX_PLAUSIBLE_SPEED_MS)
 
-        logger.info(f"Vehicle status: {status}")
+        logger.debug(f"Vehicle status: {status}")
         return status
 
     def send_stats_to_mavlink(self):
@@ -1678,17 +1863,12 @@ class OdometerService:
         return False
 
     def _post_message(self, payload: dict) -> bool:
-        """POST a MAVLink message through mavlink2rest, starting with the endpoint that last answered."""
-        start = self._endpoint_index
-        for idx in list(range(start, len(MAVLINK_POST_ENDPOINTS))) + list(range(0, start)):
-            post_url = MAVLINK_POST_ENDPOINTS[idx]
-            try:
-                response = requests.post(post_url, json=payload, timeout=2.0)
-                if response.status_code == 200:
-                    return True
-                logger.warning(f"Failed to send to {post_url} with status code {response.status_code}")
-            except Exception as e:
-                logger.warning(f"Failed to send {payload['message']['type']} to {post_url}: {e}")
+        """POST a MAVLink message through mavlink2rest. Returns True on success."""
+        resp = self._request('POST', '', json=payload)
+        if resp is not None and resp.status_code == 200:
+            return True
+        logger.warning(f"Failed to send {payload['message']['type']}: "
+                       f"{resp.status_code if resp is not None else 'no mavlink2rest endpoint reachable'}")
         return False
 
     def _read_param(self, param_id: str, timeout: float = 3.0) -> Optional[float]:
@@ -1697,8 +1877,8 @@ class OdometerService:
             "header": {"system_id": 255, "component_id": 0, "sequence": 0},
             "message": {
                 "type": "PARAM_REQUEST_READ",
-                "target_system": 1,
-                "target_component": 1,
+                "target_system": self._sysid or 1,
+                "target_component": AUTOPILOT_COMPONENT_ID,
                 "param_id": [param_id[i] if i < len(param_id) else '\u0000' for i in range(16)],
                 "param_index": -1
             }
@@ -1839,7 +2019,7 @@ def get_stats():
     with odometer_service.stats_lock:
         return jsonify({
             "status": "success",
-            "data": odometer_service.stats
+            "data": {**odometer_service.stats, 'connection': odometer_service.connection_status()}
         })
 
 @app.route('/maintenance')

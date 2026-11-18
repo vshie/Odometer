@@ -154,10 +154,13 @@
         <v-app :theme="isDarkMode ? 'dark' : 'light'">
             <v-main>
                     <v-container fluid class="pa-3 mobile-container">
-                    <!-- Vehicle name (from BlueOS) -->
-                    <v-row dense v-if="vehicleName">
-                        <v-col cols="12" class="d-flex align-center">
-                            <span class="title font-weight-medium" style="opacity: 0.85;">{{ vehicleName }}</span>
+                    <!-- Vehicle name (from BlueOS) and connection state -->
+                    <v-row dense>
+                        <v-col cols="12" class="d-flex align-center flex-wrap" style="gap: 8px;">
+                            <span v-if="vehicleName" class="title font-weight-medium" style="opacity: 0.85;">{{ vehicleName }}</span>
+                            <v-chip small :color="connectionChip.color" dark :title="connectionChip.detail">
+                                <v-icon x-small left>{{ connectionChip.icon }}</v-icon>{{ connectionChip.text }}
+                            </v-chip>
                         </v-col>
                     </v-row>
                     <!-- Header: Stats + Logo/Armed Bar -->
@@ -1043,6 +1046,19 @@
                 }
             },
             computed: {
+                connectionChip() {
+                    const c = this.stats.connection || {};
+                    if (c.vehicle_online) {
+                        return { color: 'success', icon: 'mdi-lan-connect', text: 'Autopilot sys ' + c.autopilot_sysid,
+                                 detail: 'Connected via ' + c.mavlink_endpoint };
+                    }
+                    if (c.mavlink_endpoint) {
+                        return { color: 'grey', icon: 'mdi-lan-pending', text: 'Vehicle offline',
+                                 detail: 'mavlink2rest at ' + c.mavlink_endpoint + ' has no fresh autopilot HEARTBEAT' };
+                    }
+                    return { color: 'error', icon: 'mdi-lan-disconnect', text: 'mavlink2rest unreachable',
+                             detail: 'Tried hosts: ' + (c.blueos_hosts || []).join(', ') };
+                },
                 armedPercent() {
                     const armed = Number(this.stats.armed_minutes || 0);
                     const disarmed = Number(this.stats.disarmed_minutes || 0);

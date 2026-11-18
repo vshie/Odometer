@@ -70,6 +70,15 @@ The Odometer polls the Mavlink2Rest API once per minute to:
 3. Monitor battery voltage and detect battery swaps (when voltage increases by > 1V)
 4. Record all this data to a persistent CSV file
 
+### Connection
+
+The extension finds the vehicle on its own:
+
+- **BlueOS host:** it tries `host.docker.internal`, the container's default gateway (the Docker host), `192.168.2.2` and `blueos.local`, then keeps using whichever answers. The same host is used for the vehicle name and clock.
+- **Autopilot system ID:** it is discovered from Mavlink2Rest (the system whose component 1 sends a fresh autopilot HEARTBEAT), so vehicles with `SYSID_THISMAV`/`MAV_SYSID` other than 1 are tracked. If that system goes quiet, it is rediscovered.
+
+Changes are logged once (endpoint in use, autopilot found or lost, vehicle online/offline), and the current state is shown as a chip at the top of the page and returned under `connection` in `/stats`.
+
 A startup is counted when the vehicle has rebooted (detected from the kernel boot ID), not when only the extension restarts. Dive time is only counted for ArduSub vehicles.
 
 ### Energy
