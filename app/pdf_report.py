@@ -181,12 +181,12 @@ def generate_report(
     if thrusters.get("thruster_count", 0) > 0:
         story.append(Paragraph("Thrusters / Motors", heading_style))
         unit = thrusters.get("layout", {}).get("unit", "thruster")
-        rows = [["#", "Run Time", "Avg PWM (us)"]]
+        rows = [["#", "Run Time", "Avg Throttle"]]
         for t in thrusters.get("thrusters", []):
             rows.append([
                 str(t.get("id", "")),
                 _fmt_time(t.get("run_minutes", 0)),
-                str(t.get("avg_pwm_armed", 0) or "-"),
+                f"{t['avg_throttle_pct']:.0f}%" if t.get("avg_throttle_pct") else "-",
             ])
         t = Table(rows, colWidths=[0.8 * inch, 1.2 * inch, 1.2 * inch])
         t.setStyle(TableStyle([

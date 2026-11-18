@@ -10,7 +10,19 @@ The BlueOS Odometer Extension tracks your vehicle's usage stats and maintenance 
 - **Thruster Duty Cycle**: Average PWM value when armed (duty-cycle indicator)
 - **Battery Monitoring**: Records battery voltage and detects battery swaps
 - **Maintenance Log**: Add and track repair, replacement, and maintenance events
-- **Data Export**: Download all collected data as CSV files
+- **Data Export**: Download all collected data as CSV files, or a PDF report
+- **Cockpit Widget**: Session distance, total hours and lifetime energy at a glance
+
+## Interface
+
+The page is laid out like an instrument panel, with a **Night** (backlit dash) and **Bench** (80s test-gear) look; the switch at the top right picks one and is remembered.
+
+- **Header:** vehicle name and autopilot system ID, plus tell-tale lamps for link, armed, low voltage (3.2 V/cell for 4S or 6S packs), hard use (this session) and GPS fix.
+- **Cluster:** battery volts (4S/6S maximum marks and low-voltage zones), current, CPU temperature and share of time armed, with mechanical counters for total hours, this session and armed hours. Gauges update every few seconds.
+- **Scope:** battery volts, CPU temperature and speed (boats) or depth (ROVs) over this session, the last 24 hours or 7 days. Hover or touch for values.
+- **Time in mode**, **motor/thruster run hours** with average throttle, devices, lifetime energy, distance and battery swaps.
+- **Trip log:** one row per session, with CSV export of the full per-minute log, a PDF report, and delete/clear.
+- **Service record:** filter by type (all records by default); pick a type to add one, optionally resetting motor run hours. Records can be re-dated or deleted, and exported as CSV.
 
 ## Installation
 

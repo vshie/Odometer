@@ -22,34 +22,15 @@ COPY app /app
 # Create directories for storing data and logs
 RUN mkdir -p /app/data /app/logs
 
-# Bundle frontend dependencies locally for offline use (no internet required at runtime)
-RUN mkdir -p /app/static/vendor/mdi/css /app/static/vendor/mdi/fonts /app/static/vendor/fonts \
-    && curl -fsSL -o /app/static/vendor/fonts/vt323-latin-400-normal.woff2 \
-       "https://cdn.jsdelivr.net/npm/@fontsource/vt323@5.2.7/files/vt323-latin-400-normal.woff2" \
-    && curl -fsSL -o /app/static/vendor/vuetify.min.css \
-       "https://cdn.jsdelivr.net/npm/vuetify@2.6.14/dist/vuetify.min.css" \
-    && curl -fsSL -o /app/static/vendor/mdi/css/materialdesignicons.min.css \
-       "https://cdn.jsdelivr.net/npm/@mdi/font@6.9.96/css/materialdesignicons.min.css" \
-    && curl -fsSL -o /app/static/vendor/mdi/fonts/materialdesignicons-webfont.eot \
-       "https://cdn.jsdelivr.net/npm/@mdi/font@6.9.96/fonts/materialdesignicons-webfont.eot" \
-    && curl -fsSL -o /app/static/vendor/mdi/fonts/materialdesignicons-webfont.woff2 \
-       "https://cdn.jsdelivr.net/npm/@mdi/font@6.9.96/fonts/materialdesignicons-webfont.woff2" \
-    && curl -fsSL -o /app/static/vendor/mdi/fonts/materialdesignicons-webfont.woff \
-       "https://cdn.jsdelivr.net/npm/@mdi/font@6.9.96/fonts/materialdesignicons-webfont.woff" \
-    && curl -fsSL -o /app/static/vendor/mdi/fonts/materialdesignicons-webfont.ttf \
-       "https://cdn.jsdelivr.net/npm/@mdi/font@6.9.96/fonts/materialdesignicons-webfont.ttf" \
-    && curl -fsSL -o /app/static/vendor/vue.min.js \
-       "https://cdn.jsdelivr.net/npm/vue@2.6.14/dist/vue.min.js" \
-    && curl -fsSL -o /app/static/vendor/vuetify.min.js \
-       "https://cdn.jsdelivr.net/npm/vuetify@2.6.14/dist/vuetify.min.js" \
-    && curl -fsSL -o /app/static/vendor/axios.min.js \
-       "https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js" \
-    && curl -fsSL -o /app/static/vendor/moment.min.js \
-       "https://cdn.jsdelivr.net/npm/moment@2.29.4/moment.min.js" \
-    && curl -fsSL -o /app/static/vendor/chart.umd.js \
-       "https://cdn.jsdelivr.net/npm/chart.js" \
-    && curl -fsSL -o /app/static/vendor/chartjs-adapter-moment.js \
-       "https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@1.0.1/dist/chartjs-adapter-moment.js"
+# Bundle the UI's fonts (Roboto Condensed + Roboto Mono) so it works offline; the UI itself has no other dependencies
+RUN mkdir -p /app/static/vendor/fonts \
+    && for f in roboto-condensed-latin-400-normal roboto-condensed-latin-500-normal roboto-condensed-latin-600-normal \
+                roboto-condensed-latin-700-normal; do \
+         curl -fsSL -o "/app/static/vendor/fonts/$f.woff2" "https://cdn.jsdelivr.net/npm/@fontsource/roboto-condensed@5.2.8/files/$f.woff2"; \
+       done \
+    && for f in roboto-mono-latin-400-normal roboto-mono-latin-500-normal; do \
+         curl -fsSL -o "/app/static/vendor/fonts/$f.woff2" "https://cdn.jsdelivr.net/npm/@fontsource/roboto-mono@5.2.8/files/$f.woff2"; \
+       done
 
 # Install Python dependencies with pinned versions for compatibility
 RUN pip install --no-cache-dir \

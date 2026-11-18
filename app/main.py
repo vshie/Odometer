@@ -72,6 +72,7 @@ THRUSTER_DETECT_INTERVAL = 600  # Re-read SERVOn_FUNCTION params every 10 minute
 BLUEOS_HOSTS = ['host.docker.internal', '192.168.2.2', 'blueos.local']
 AUTOPILOT_COMPONENT_ID = 1
 SYSID_DISCOVERY_INTERVAL = 10  # Seconds between attempts to find the autopilot's system ID
+UNREACHABLE_BACKOFF = 10  # After every endpoint fails, skip mavlink2rest requests for this long (s)
 STALE_MESSAGE_SECONDS = 10.0  # mavlink2rest serves its last cached message forever; older than this = vehicle offline
 
 UPDATE_INTERVAL = 60  # Update every 60 seconds (1 minute)
@@ -84,6 +85,8 @@ WEBSOCKET_UPDATE_INTERVAL = 1.0  # Seconds between WebSocket updates
 DIVE_DEPTH_THRESHOLD = 1.0  # Depth threshold in meters to count as diving
 BATTERY_SWAP_VOLTAGE_THRESHOLD = 1.0  # Voltage increase (V) to detect battery swap on reconnect
 MAX_PLAUSIBLE_SPEED_MS = 15.0  # Speed cap (m/s) to filter GPS glitches
+TIMESERIES_MAX_POINTS = 400  # Points returned for the scope display
+ODOMETER_ROW_BYTES = 160  # Generous size of an odometer.csv row, to seek near the start of a time range
 MIN_SPEED_FOR_DISTANCE_MS = 0.2  # Ignore velocity noise below this when integrating distance (good GPS)
 POOR_HDOP = 0.9  # Above this HDOP, GPS velocity noise grows (0.03-0.22 m/s seen at HDOP ~1.0-1.4 on a moored BlueBoat)
 MAX_SPEED_FLOOR_MS = 0.5  # Cap on the HDOP-scaled speed floor
@@ -273,10 +276,13 @@ class OdometerService:
         self._endpoint_index = 0  # Index into _mavlink_endpoints of the endpoint that last answered
         self._active_endpoint = None  # URL of the mavlink2rest endpoint in use; None while unreachable
         self._unreachable_logged = False
+        self._unreachable_until = 0.0  # Monotonic time until which requests are skipped after a full round of failures
         self._sysid = None  # Autopilot MAVLink system ID (SYSID_THISMAV), discovered from mavlink2rest
         self._sysid_checked = 0.0
         self._autopilot_missing_logged = False
         self._vehicle_online = None  # Last logged online state, to log transitions only
+        # 1 Hz snapshot for the UI's gauges and lamps (stats are only updated once a minute)
+        self.live = {'armed': False, 'voltage': 0.0, 'current_a': 0.0, 'speed_m_s': 0.0, 'updated': 0.0}
         logger.info(f"BlueOS host candidates: {self._blueos_hosts}")
         self._message_seen = {}  # {(sysid, msg_type): (counter, monotonic time the counter last changed)}
         self._freshness_lock = threading.Lock()
@@ -696,6 +702,16 @@ class OdometerService:
             # Older sessions are judged against the vehicle's type; re-judge now that it's known
             self._refresh_hard_use()
 
+    @staticmethod
+    def avg_throttle_pct(t: dict) -> float:
+        """Average throttle (0-100%) while armed: mean of |pwm - neutral| / 400 us. Thrusters recorded before
+        this was tracked fall back to their average PWM's distance from neutral."""
+        if t.get('throttle_count'):
+            return round(100.0 * t.get('throttle_sum', 0.0) / t['throttle_count'], 1)
+        if t.get('avg_pwm_count'):
+            return round(100.0 * min(abs(t['avg_pwm_sum'] / t['avg_pwm_count'] - PWM_NEUTRAL), 400) / 400, 1)
+        return 0.0
+
     def get_thruster_count_from_mav_type(self, mav_type: int) -> int:
         """Default thruster count until SERVOn_FUNCTION params are read. ArduSub: 8, Boat/Rover: 2"""
         if mav_type == MAV_TYPE_SUBMARINE:
@@ -818,6 +834,8 @@ class OdometerService:
                     self.thruster_stats['thrusters'][idx]['run_seconds'] = 0.0
                     self.thruster_stats['thrusters'][idx]['avg_pwm_sum'] = 0
                     self.thruster_stats['thrusters'][idx]['avg_pwm_count'] = 0
+                    self.thruster_stats['thrusters'][idx]['throttle_sum'] = 0.0
+                    self.thruster_stats['thrusters'][idx]['throttle_count'] = 0
             self.save_thruster_stats()
     
     def _is_hard_use(self, mission: dict) -> bool:
@@ -1255,6 +1273,8 @@ class OdometerService:
                             t['avg_pwm_sum'] = t.get('avg_pwm_sum', 0) + pwm
                             t['avg_pwm_count'] = t.get('avg_pwm_count', 0) + 1
                             dev = abs(pwm - PWM_NEUTRAL)
+                            t['throttle_sum'] = t.get('throttle_sum', 0.0) + min(dev, 400) / 400
+                            t['throttle_count'] = t.get('throttle_count', 0) + 1
                             max_dev = max(max_dev, dev)
                             if dev > PWM_ACTIVE_DEADBAND:
                                 t['run_seconds'] = t.get('run_seconds', 0.0) + dt
@@ -1284,8 +1304,8 @@ class OdometerService:
                 logger.debug(f"PWM sample loop: {e}")
 
     def distance_sample_loop(self):
-        """While armed, sample at 1 Hz: ground speed, integrated over the real elapsed time for distance, and
-        battery current, so short peaks count toward the session's max current (hard use)."""
+        """Sample at 1 Hz: armed state and battery for the live gauges and, while armed, ground speed
+        (integrated over the real elapsed time for distance) and current peaks (hard use)."""
         last_sample = time.monotonic()
         while not self.stop_event.is_set():
             time.sleep(DISTANCE_SAMPLE_INTERVAL)
@@ -1293,15 +1313,27 @@ class OdometerService:
             dt = min(now - last_sample, DISTANCE_SAMPLE_INTERVAL * 5)
             last_sample = now
             try:
-                if not self.get_armed_status():
-                    continue
+                is_armed = self.get_armed_status()
                 battery = self._get_message('BATTERY_STATUS')
-                current = battery.get('current_battery', -1) if battery else -1
-                if current is not None and current != -1:
+                live = {'armed': is_armed, 'updated': time.time(), 'speed_m_s': 0.0, 'voltage': 0.0, 'current_a': 0.0}
+                if battery is not None:
+                    voltages = battery.get('voltages') or []
+                    if voltages and 0 < voltages[0] < 65535:
+                        live['voltage'] = voltages[0] / 1000.0
+                    current = battery.get('current_battery', -1)
+                    if current is not None and current != -1:
+                        live['current_a'] = abs(int(current)) / 100.0
+                if not is_armed:
                     with self.stats_lock:
-                        m = self.stats['current_mission']
-                        m['max_current_a'] = max(m.get('max_current_a', 0), abs(int(current)) / 100.0)
+                        self.live.update(live)
+                    continue
+                with self.stats_lock:
+                    m = self.stats['current_mission']
+                    m['max_current_a'] = max(m.get('max_current_a', 0), live['current_a'])
                 speed_m_s, hdop = self.get_ground_speed_m_s()
+                live['speed_m_s'] = speed_m_s
+                with self.stats_lock:
+                    self.live.update(live)
                 if speed_m_s < self._distance_speed_floor(hdop):
                     continue  # Velocity noise while holding station would otherwise accumulate
                 distance_m = speed_m_s * dt
@@ -1419,6 +1451,7 @@ class OdometerService:
 
             vehicle = self.get_vehicle_status()
             current_voltage = vehicle['voltage']
+            self.stats['voltage_now'] = current_voltage
             is_armed = vehicle['is_armed']
             current_depth = vehicle['depth']
             mav_type = vehicle['mav_type']
@@ -1426,6 +1459,8 @@ class OdometerService:
             groundspeed = vehicle['groundspeed']
             consumed_mah = vehicle['consumed_mah']
             current_cpu_temp = self.get_cpu_temperature()
+            gps = self._get_message('GPS_RAW_INT')
+            self.stats['gps_fix'] = bool(gps and self._has_3d_fix(gps))
             # Fetch time before taking the lock (HTTP call)
             now_iso = self.get_local_time().isoformat()
 
@@ -1597,7 +1632,7 @@ class OdometerService:
             str(self.stats['dive_minutes']),
             str(self.stats['battery_swaps']),
             str(self.stats['startups']),
-            str(self.stats['last_voltage']),
+            str(self.stats['voltage_now']) if self.stats.get('voltage_now', 0) > 0 else '',
             str(self.stats['last_depth']),
             cpu_temp_value,
             str(self.stats['previous_batteries_wh']),
@@ -1631,7 +1666,13 @@ class OdometerService:
         return -1
     
     def _request(self, method: str, path: str, **kwargs) -> Optional[requests.Response]:
-        """Send a request to mavlink2rest, starting with the endpoint that last answered."""
+        """Send a request to mavlink2rest, starting with the endpoint that last answered.
+
+        After every endpoint has failed, requests return None for UNREACHABLE_BACKOFF seconds: each failure can
+        cost a 2 s timeout per endpoint, which would otherwise stall the sampling loops while BlueOS is down.
+        """
+        if time.monotonic() < self._unreachable_until:
+            return None
         endpoints = self._mavlink_endpoints
         start = self._endpoint_index
         for idx in list(range(start, len(endpoints))) + list(range(0, start)):
@@ -1650,6 +1691,7 @@ class OdometerService:
             logger.warning(f"mavlink2rest unreachable; tried {endpoints}")
             self._unreachable_logged = True
         self._active_endpoint = None
+        self._unreachable_until = time.monotonic() + UNREACHABLE_BACKOFF
         return None
 
     def _blueos_base_url(self) -> str:
@@ -2091,7 +2133,9 @@ def get_stats():
     with odometer_service.stats_lock:
         return jsonify({
             "status": "success",
-            "data": {**odometer_service.stats, 'connection': odometer_service.connection_status()}
+            "data": {**odometer_service.stats, 'connection': odometer_service.connection_status(),
+                     'live': dict(odometer_service.live),
+                     'session_hard_use': odometer_service._is_hard_use(odometer_service.stats['current_mission'])}
         })
 
 @app.route('/maintenance')
@@ -2345,7 +2389,8 @@ def export_pdf():
                 thrusters.append({
                     'id': i + 1,
                     'run_minutes': t.get('run_minutes', 0),
-                    'avg_pwm_armed': avg_pwm
+                    'avg_pwm_armed': avg_pwm,
+                    'avg_throttle_pct': odometer_service.avg_throttle_pct(t)
                 })
             thruster_data['thrusters'] = thrusters
         with odometer_service.accessory_lock:
@@ -2484,6 +2529,81 @@ def clear_history():
         logger.error(f"Error clearing history: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
+def _parse_csv_time(value: str) -> Optional[datetime.datetime]:
+    """Parse an odometer.csv / session timestamp (ISO, or legacy 'YYYY-MM-DD HH:MM:SS'), assuming UTC if naive."""
+    try:
+        t = datetime.datetime.fromisoformat(str(value).strip().replace(' ', 'T'))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def _read_odometer_since(since: datetime.datetime) -> List[Dict[str, str]]:
+    """odometer.csv rows at or after `since`, reading only the tail of the file (it grows by a row a minute)."""
+    if not ODOMETER_CSV.exists():
+        return []
+    minutes = max(1.0, (datetime.datetime.now(timezone.utc) - since).total_seconds() / 60)
+    with open(ODOMETER_CSV, 'rb') as f:
+        header = f.readline().decode('utf-8', 'replace').strip().split(',')
+        size = ODOMETER_CSV.stat().st_size
+        start = max(f.tell(), size - int(minutes * ODOMETER_ROW_BYTES) - 4096)
+        f.seek(start)
+        if start > len(header):
+            f.readline()  # Landed mid-row
+        text = f.read().decode('utf-8', 'replace')
+    rows = []
+    for values in csv.reader(text.splitlines()):
+        if len(values) != len(header):
+            continue
+        row = dict(zip(header, values))
+        t = _parse_csv_time(row.get('timestamp', ''))
+        if t is not None and t >= since:
+            row['_t'] = t
+            rows.append(row)
+    return rows
+
+
+@app.route('/api/timeseries')
+def timeseries():
+    """Scope data: [unix time, volts, CPU degC, CH3] per point, CH3 being depth (m) on a submarine or speed (m/s,
+    from the logged distance) otherwise. range is SESSION (this power-on), 24H or 7D; capped at TIMESERIES_MAX_POINTS."""
+    rng = request.args.get('range', 'SESSION').upper()
+    now = datetime.datetime.now(timezone.utc)
+    if rng == '7D':
+        since = now - datetime.timedelta(days=7)
+    elif rng == '24H':
+        since = now - datetime.timedelta(hours=24)
+    else:
+        rng = 'SESSION'
+        with odometer_service.stats_lock:
+            since = _parse_csv_time(odometer_service.stats['current_mission'].get('start_time') or '') or now - datetime.timedelta(hours=1)
+    is_sub = odometer_service.thruster_stats.get('mav_type') == MAV_TYPE_SUBMARINE
+    rows = _read_odometer_since(since)
+    num = lambda row, key: float(row[key]) if row.get(key, '').strip() else None
+    step = max(1, math.ceil(len(rows) / TIMESERIES_MAX_POINTS))
+    points = []
+    prev = rows[0] if rows else None
+    for i in range(0, len(rows), step):
+        chunk = rows[i:i + step]
+        volts = [v for v in (num(r, 'voltage') for r in chunk) if v and v > 0]
+        temps = [v for v in (num(r, 'cpu_temp') for r in chunk) if v and v > 0]
+        if is_sub:
+            depths = [v for v in (num(r, 'depth') for r in chunk) if v is not None]
+            ch3 = max(depths) if depths else None
+        else:
+            # Mean speed over the chunk from the odometer's cumulative distance
+            secs = (chunk[-1]['_t'] - prev['_t']).total_seconds()
+            d0, d1 = num(prev, 'total_distance_m'), num(chunk[-1], 'total_distance_m')
+            ch3 = min(max((d1 - d0) / secs, 0.0), MAX_PLAUSIBLE_SPEED_MS) if secs > 0 and d0 is not None and d1 is not None else 0.0
+        points.append([int(chunk[0]['_t'].timestamp()),
+                       round(sum(volts) / len(volts), 3) if volts else None,
+                       round(sum(temps) / len(temps), 1) if temps else None,
+                       round(ch3, 2) if ch3 is not None else None])
+        prev = chunk[-1]
+    return jsonify({"status": "success", "data": {"range": rng, "vehicle_type": 'sub' if is_sub else 'boat',
+                                                  "start": since.isoformat(), "points": points}})
+
+
 @app.route('/missions')
 def get_missions():
     """Get the list of completed missions"""
@@ -2529,6 +2649,7 @@ def get_thrusters():
     """Get per-thruster run hours and average PWM stats"""
     with odometer_service.thruster_lock:
         stats = odometer_service.thruster_stats
+        channels = stats.get('channels') or []
         thrusters = []
         for i, t in enumerate(stats['thrusters']):
             run_min = t.get('run_minutes', 0)
@@ -2537,8 +2658,10 @@ def get_thrusters():
             avg_pwm = round(pwm_sum / pwm_count, 1) if pwm_count > 0 else 0
             thrusters.append({
                 'id': i + 1,
+                'channel': channels[i] if i < len(channels) else i + 1,
                 'run_minutes': run_min,
-                'avg_pwm_armed': avg_pwm
+                'avg_pwm_armed': avg_pwm,
+                'avg_throttle_pct': odometer_service.avg_throttle_pct(t)
             })
         mav_type = stats['mav_type']
         thruster_count = stats['thruster_count']
