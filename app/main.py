@@ -84,7 +84,9 @@ WEBSOCKET_UPDATE_INTERVAL = 1.0  # Seconds between WebSocket updates
 DIVE_DEPTH_THRESHOLD = 1.0  # Depth threshold in meters to count as diving
 BATTERY_SWAP_VOLTAGE_THRESHOLD = 1.0  # Voltage increase (V) to detect battery swap on reconnect
 MAX_PLAUSIBLE_SPEED_MS = 15.0  # Speed cap (m/s) to filter GPS glitches
-MIN_SPEED_FOR_DISTANCE_MS = 0.3  # Ignore GPS velocity noise (0.03-0.22 m/s seen on a moored BlueBoat)
+MIN_SPEED_FOR_DISTANCE_MS = 0.2  # Ignore velocity noise below this when integrating distance (good GPS)
+POOR_HDOP = 0.9  # Above this HDOP, GPS velocity noise grows (0.03-0.22 m/s seen at HDOP ~1.0-1.4 on a moored BlueBoat)
+MAX_SPEED_FLOOR_MS = 0.5  # Cap on the HDOP-scaled speed floor
 SCHEMA_FILE = DATA_DIR / 'schema.json'
 SCHEMA_VERSION = 2  # v2: Ah history corrected for the cAh/mAh bug, per-session Wh, lifetime energy rebuilt
 AH_INFLATION_RATIO = 10 ** 0.5  # Recorded/expected Ah above this (geometric midpoint of 1x and 10x) = inflated
@@ -1254,8 +1256,8 @@ class OdometerService:
             try:
                 if not self.get_armed_status():
                     continue
-                speed_m_s = self.get_ground_speed_m_s()
-                if speed_m_s < MIN_SPEED_FOR_DISTANCE_MS:
+                speed_m_s, hdop = self.get_ground_speed_m_s()
+                if speed_m_s < self._distance_speed_floor(hdop):
                     continue  # Velocity noise while holding station would otherwise accumulate
                 distance_m = speed_m_s * dt
                 with self.stats_lock:
@@ -1743,19 +1745,30 @@ class OdometerService:
             return any(k in fix for k in ('3D_FIX', 'DGPS', 'RTK', 'STATIC', 'PPP'))
         return int(fix or 0) >= 3
 
-    def get_ground_speed_m_s(self) -> float:
-        """Get ground speed in m/s from GLOBAL_POSITION_INT (vx,vy in cm/s) or GPS_RAW_INT (vel in cm/s)."""
+    def get_ground_speed_m_s(self) -> Tuple[float, Optional[float]]:
+        """Ground speed in m/s from GLOBAL_POSITION_INT (vx,vy in cm/s), falling back to GPS_RAW_INT (vel in
+        cm/s), plus the GPS HDOP (None if there's no GPS or it doesn't report one)."""
+        gps = self._get_message('GPS_RAW_INT')
+        eph = gps.get('eph') if gps is not None else None
+        hdop = eph / 100.0 if eph not in (None, 65535) else None  # eph is HDOP x 100; UINT16_MAX = unknown
         msg = self._get_message('GLOBAL_POSITION_INT')
         if msg is not None:
             vx = int(msg.get('vx', 0) or 0)  # cm/s
             vy = int(msg.get('vy', 0) or 0)  # cm/s
-            return min(math.sqrt(vx * vx + vy * vy) / 100.0, MAX_PLAUSIBLE_SPEED_MS)
-        msg = self._get_message('GPS_RAW_INT')
-        if msg is not None and self._has_3d_fix(msg):
-            vel = int(msg.get('vel', 0) or 0)  # cm/s; 65535 = unknown
+            return min(math.sqrt(vx * vx + vy * vy) / 100.0, MAX_PLAUSIBLE_SPEED_MS), hdop
+        if gps is not None and self._has_3d_fix(gps):
+            vel = int(gps.get('vel', 0) or 0)  # cm/s; 65535 = unknown
             if vel != 65535:
-                return min(vel / 100.0, MAX_PLAUSIBLE_SPEED_MS)
-        return 0.0
+                return min(vel / 100.0, MAX_PLAUSIBLE_SPEED_MS), hdop
+        return 0.0, hdop
+
+    @staticmethod
+    def _distance_speed_floor(hdop: Optional[float]) -> float:
+        """Speed below which velocity is treated as noise. GPS velocity noise grows with HDOP, so the floor
+        rises in proportion above POOR_HDOP; without GPS (e.g. a DVL-only sub) the base floor applies."""
+        if hdop is None or hdop <= POOR_HDOP:
+            return MIN_SPEED_FOR_DISTANCE_MS
+        return min(MIN_SPEED_FOR_DISTANCE_MS * hdop / POOR_HDOP, MAX_SPEED_FLOOR_MS)
 
     def get_armed_status(self) -> bool:
         """Lightweight check: is vehicle armed? Fetches HEARTBEAT only; a stale heartbeat counts as disarmed."""
