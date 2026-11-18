@@ -84,7 +84,7 @@ WEBSOCKET_UPDATE_INTERVAL = 1.0  # Seconds between WebSocket updates
 DIVE_DEPTH_THRESHOLD = 1.0  # Depth threshold in meters to count as diving
 BATTERY_SWAP_VOLTAGE_THRESHOLD = 1.0  # Voltage increase (V) to detect battery swap on reconnect
 MAX_PLAUSIBLE_SPEED_MS = 15.0  # Speed cap (m/s) to filter GPS glitches
-MIN_SPEED_FOR_DISTANCE_MS = 0.2  # Ignore velocity noise below this when integrating distance
+MIN_SPEED_FOR_DISTANCE_MS = 0.3  # Ignore GPS velocity noise (0.03-0.22 m/s seen on a moored BlueBoat)
 SCHEMA_FILE = DATA_DIR / 'schema.json'
 SCHEMA_VERSION = 2  # v2: Ah history corrected for the cAh/mAh bug, per-session Wh, lifetime energy rebuilt
 AH_INFLATION_RATIO = 10 ** 0.5  # Recorded/expected Ah above this (geometric midpoint of 1x and 10x) = inflated
@@ -1907,7 +1907,13 @@ class OdometerService:
         """
         functions = {}
         for ch in range(1, 17):
-            value = self._read_param(f'SERVO{ch}_FUNCTION')
+            # mavlink2rest keeps only the latest PARAM_VALUE, so a GCS fetching params at the same time can
+            # overwrite our reply before it's polled; retry before giving up on this pass
+            value = None
+            for _ in range(3):
+                value = self._read_param(f'SERVO{ch}_FUNCTION')
+                if value is not None:
+                    break
             if value is None:
                 logger.info(f"Could not read SERVO{ch}_FUNCTION; keeping current thruster mapping")
                 return None
