@@ -491,6 +491,7 @@ body {
             <span class="screw tl"></span><span class="screw tr"></span>
             <div class="panel-head">
                 <div class="legend">Service record</div>
+                <a class="chip-btn" id="selftest-link" target="_blank" rel="noopener" hidden>⇗ Self Test</a>
                 <a class="chip-btn" href="download/maintenance" download title="Download the service record (maintenance.csv)">⇩ Export CSV</a>
             </div>
             <div class="label-maker" id="label-maker"></div>
@@ -1064,8 +1065,23 @@ function renderTrips() {
 }
 
 /* ---------- Service record ---------- */
+// The BlueOS Self Test extension, as seen from this browser (same host, its own port), or null if not running
+function selftestBase() {
+    const url = S.stats && S.stats.selftest && S.stats.selftest.url;
+    if (!url) return null;
+    return `${location.protocol}//${location.hostname}:${new URL(url).port}`;
+}
+function renderSelftestLink() {
+    const base = selftestBase(), link = $('selftest-link');
+    link.hidden = !base;
+    if (base) {
+        link.href = `${base}/`;
+        link.title = `BlueOS Self Test is running; its runs are added here automatically (${S.stats.selftest.imported} so far)`;
+    }
+}
 const DYMO = { 'Repair': '#b3261e', 'Replacement': '#1f4e8c', 'Maintenance': '#2e7d32', 'Inspection': '#8a6d00',
-               'Motor Sticking': '#c2410c', 'Thruster Sticking': '#c2410c', 'Add Device': '#5b2a86', 'Note': '#2b2b2b' };
+               'Motor Sticking': '#c2410c', 'Thruster Sticking': '#c2410c', 'Add Device': '#5b2a86', 'Note': '#2b2b2b',
+               'Self Test': '#00796b' };
 const eventTypes = () => ['Repair', 'Replacement', 'Maintenance', 'Inspection', `${unitWord()} Sticking`, 'Note', 'Add Device'];
 const maintState = { editing: null, deleting: null, deleteStep: 1, type: 'All' };
 
@@ -1112,6 +1128,11 @@ function labelMaker() {
         } catch (e) { toast(e.message, true); }
     };
 }
+function linkLogs(html) {
+    // Imported Self Test records name their log; link it to the Self Test extension when it's running
+    const base = selftestBase();
+    return base ? html.replace(/(selftest_[A-Za-z0-9_-]+\.log)/g, `<a href="${base}/api/logs/$1" target="_blank" rel="noopener" style="color: inherit">$1</a>`) : html;
+}
 function renderMaint() {
     const records = [...S.maintenance].sort((a, b) => parseTime(b.timestamp) - parseTime(a.timestamp));
     const shown = records.filter(m => maintState.type === 'All' || m.event_type === maintState.type);
@@ -1137,7 +1158,7 @@ function renderMaint() {
         const motors = (m.thruster_ids || []).map(thrusterName).join(', ');
         const tag = motors ? ` <span class="tag">[${esc(motors)}${m.reset_run_hours ? ' · run hours reset' : ''}]</span>` : '';
         return `<div class="mrow">${when}<div><span class="dymo" style="background:${DYMO[m.event_type] || '#2b2b2b'}">${esc(m.event_type)}</span></div>
-                <div class="details">${esc(m.details)}${tag}</div><div class="acts">${acts}</div></div>`;
+                <div class="details">${linkLogs(esc(m.details))}${tag}</div><div class="acts">${acts}</div></div>`;
     }).join('');
     $('maint').querySelectorAll('button[data-act]').forEach(b => b.onclick = async () => {
         const ts = b.dataset.ts;
@@ -1166,9 +1187,12 @@ function renderMaint() {
 let statsFailed = false;
 async function loadStats() {
     try {
+        const hadSelftest = selftestBase();
         S.stats = (await api('stats')).data;
         statsFailed = false;
         renderStats();
+        renderSelftestLink();
+        if (selftestBase() !== hadSelftest) renderMaint();
     } catch (e) {
         if (!statsFailed) toast('Odometer extension unreachable', true);
         statsFailed = true;

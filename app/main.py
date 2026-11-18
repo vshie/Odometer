@@ -52,6 +52,8 @@ THRUSTERS_FILE = DATA_DIR / 'thrusters.json'
 ACCESSORIES_FILE = DATA_DIR / 'accessories.json'
 VEHICLE_FILE = DATA_DIR / 'vehicle.json'
 MODES_FILE = DATA_DIR / 'modes.json'
+SELFTEST_IMPORTS_FILE = DATA_DIR / 'selftest_imports.json'  # Self Test runs already copied to the service record
+MAINTENANCE_LOCK = threading.Lock()  # The web routes and the Self Test importer both write maintenance.csv
 CPU_TEMP_PATH = Path('/sys/class/thermal/thermal_zone0/temp')
 DISTANCE_SAMPLE_INTERVAL = 1  # Poll at 1 Hz when armed for distance tracking
 
@@ -65,6 +67,8 @@ SERVO_FUNCTION_MOTORS = {33 + i: i + 1 for i in range(8)}  # Motor1..Motor8 -> t
 SERVO_FUNCTION_THROTTLE_LEFT = 73
 SERVO_FUNCTION_THROTTLE_RIGHT = 74
 THRUSTER_DETECT_INTERVAL = 600  # Re-read SERVOn_FUNCTION params every 10 minutes
+SELFTEST_SCAN_INTERVAL = 300  # Look for new BlueOS Self Test runs every 5 minutes
+SELFTEST_STALE_RUN_HOURS = 2  # An unfinished Self Test run this old was abandoned: import what it recorded
 
 # Hosts where BlueOS may be reachable from inside this container, in order of preference; the container's
 # default gateway (the Docker host) is added at runtime. Not localhost: inside this container that is the
@@ -317,6 +321,12 @@ class OdometerService:
         self.thruster_detect_thread = threading.Thread(target=self.thruster_detect_loop)
         self.thruster_detect_thread.daemon = True
         self.thruster_detect_thread.start()
+
+        # Copy BlueOS Self Test runs into the service record when that extension is running
+        self.selftest_status = {'url': None, 'imported': 0, 'last_check': None}
+        self.selftest_thread = threading.Thread(target=self.selftest_import_loop)
+        self.selftest_thread.daemon = True
+        self.selftest_thread.start()
     
     def detect_startup(self):
         """Count a startup when the vehicle has rebooted since the extension last ran.
@@ -2035,6 +2045,119 @@ class OdometerService:
             return [right, left] if right and left else None
         return None
 
+    def selftest_import_loop(self):
+        """Periodically import new BlueOS Self Test runs into the service record."""
+        self.stop_event.wait(30)  # Let BlueOS and the other extensions come up first
+        while not self.stop_event.is_set():
+            try:
+                self.import_selftest_runs()
+            except Exception as e:
+                logger.warning(f"Self Test import: {e}")
+            self.stop_event.wait(SELFTEST_SCAN_INTERVAL)
+
+    def _find_selftest(self) -> Optional[str]:
+        """Base URL of the BlueOS Self Test extension, if BlueOS's helper lists it as running."""
+        base = self._blueos_base_url()
+        try:
+            services = requests.get(f"{base}/helper/latest/web_services", timeout=5).json()
+        except (requests.exceptions.RequestException, ValueError):
+            return None
+        host = urlparse(base).hostname
+        for service in services if isinstance(services, list) else []:
+            meta = service.get('metadata') or {}
+            if meta.get('sanitized_name') == 'selftest' or meta.get('name') == 'Self Test':
+                return f"http://{host}:{service.get('port')}"
+        return None
+
+    def import_selftest_runs(self) -> None:
+        """Add a "Self Test" service record for each finished (or abandoned) Self Test run not yet imported."""
+        url = self._find_selftest()
+        if url != self.selftest_status['url']:
+            logger.info(f"BlueOS Self Test found at {url}; importing its runs" if url else "BlueOS Self Test not running")
+        self.selftest_status.update(url=url, last_check=datetime.datetime.now(timezone.utc).isoformat())
+        if not url:
+            return
+        try:
+            imported = set(json.loads(SELFTEST_IMPORTS_FILE.read_text()).get('runs', []))
+        except (OSError, ValueError):
+            imported = set()
+        names = [entry['name'] for entry in requests.get(f"{url}/api/logs", timeout=5).json()]
+        added = 0
+        for name in sorted(names):
+            run = name[:-len('.log')]
+            if run in imported:
+                continue
+            data = requests.get(f"{url}/api/logs/{run}.json", timeout=5).json()
+            started = self._selftest_time(data.get('started'))
+            age_h = (datetime.datetime.now(timezone.utc) - started).total_seconds() / 3600 if started else 0
+            if not data.get('finished') and age_h < SELFTEST_STALE_RUN_HOURS:
+                continue  # Still in progress
+            details, thruster_ids = self._selftest_details(run, data)
+            timestamp = (started or datetime.datetime.now(timezone.utc)).isoformat()
+            with MAINTENANCE_LOCK:
+                with open(MAINTENANCE_CSV, 'a', newline='') as f:
+                    csv.writer(f).writerow([timestamp, 'Self Test', details,
+                                            json.dumps(thruster_ids) if thruster_ids else '', 'false', '', '', '', 'false'])
+            imported.add(run)
+            _atomic_write_json(SELFTEST_IMPORTS_FILE, {'runs': sorted(imported)})
+            added += 1
+            logger.info(f"Imported Self Test run {run} into the service record")
+        self.selftest_status['imported'] = len(imported)
+        if added:
+            logger.info(f"Imported {added} Self Test run(s)")
+
+    @staticmethod
+    def _selftest_time(value: Any) -> Optional[datetime.datetime]:
+        """Parse Self Test's 'YYYY-MM-DD HH:MM:SS TZ' timestamps (written as UTC on BlueOS)."""
+        match = re.match(r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})', str(value or ''))
+        if not match:
+            return None
+        return datetime.datetime.fromisoformat(match.group(1)).replace(tzinfo=timezone.utc)
+
+    def _selftest_details(self, run: str, data: dict) -> Tuple[str, List[int]]:
+        """Summarise a Self Test run for the service record. Returns (details, ids of thrusters that failed)."""
+        # A tester can retest an output; its last result is the one that counts
+        latest = {}
+        for test in data.get('tests') or []:
+            latest[(test.get('name'), test.get('channel'))] = test
+        results = [t.get('result') for t in latest.values()]
+        summary = data.get('summary') or {}
+        passed = summary.get('passed', results.count('PASS'))
+        failed = summary.get('failed', results.count('FAIL'))
+        skipped = summary.get('skipped', results.count('SKIPPED'))
+        errors = summary.get('errors', sum(r in ('ERROR', 'ABORTED') for r in results))
+        overall = summary.get('overall') or 'INCOMPLETE'
+        counts = f"{passed} passed, {failed} failed, {skipped} skipped" + (f", {errors} errors" if errors else '')
+        parts = [f"{overall}: {counts}"]
+        if latest:
+            parts.append(', '.join(f"{t.get('name')} {t.get('result')}" for t in latest.values()))
+        if data.get('network') and data['network'].get('verdict'):
+            parts.append(f"Network {data['network']['verdict']}")
+        if data.get('devices') and data['devices'].get('result'):
+            parts.append(f"Devices {data['devices']['result']}")
+        version_issues = [f"{c['name']} {c['result']}" for c in (data.get('versions') or {}).get('checks', [])
+                          if c.get('result') != 'PASS']
+        if data.get('versions'):
+            parts.append('; '.join(version_issues) if version_issues else 'Software up to date')
+        for cal in data.get('calibration') or []:
+            if cal.get('applied') and cal.get('changes'):
+                changes = ', '.join(f"{name} {ch.get('old'):.4g} -> {ch.get('new'):.4g}"
+                                    for name, ch in cal['changes'].items() if ch.get('old') is not None)
+                parts.append(f"Power sensor calibrated ({changes})")
+        meta = data.get('meta') or {}
+        for key, label in (('operator', 'Operator'), ('serial', 'Serial')):
+            if meta.get(key):
+                parts.append(f"{label} {meta[key]}")
+        if not data.get('finished'):
+            parts.append('run not finished')
+        parts.append(f"log {run}.log")
+        # Link failed thrusters to this vehicle's thruster numbers through their output channel
+        with self.thruster_lock:
+            channels = list(self.thruster_stats.get('channels') or [])
+        failed_ids = sorted({channels.index(t.get('channel')) + 1 for t in latest.values()
+                             if t.get('result') == 'FAIL' and t.get('channel') in channels})
+        return ' · '.join(parts), failed_ids
+
     def thruster_detect_loop(self):
         """Periodically refresh the thruster -> channel mapping from autopilot params."""
         while not self.stop_event.is_set():
@@ -2135,6 +2258,7 @@ def get_stats():
             "status": "success",
             "data": {**odometer_service.stats, 'connection': odometer_service.connection_status(),
                      'live': dict(odometer_service.live),
+                     'selftest': dict(odometer_service.selftest_status),
                      'session_hard_use': odometer_service._is_hard_use(odometer_service.stats['current_mission'])}
         })
 
@@ -2244,10 +2368,11 @@ def add_maintenance():
     if not MAINTENANCE_CSV.exists() or MAINTENANCE_CSV.stat().st_size == 0:
         odometer_service.setup_csv_files()
     
-    with open(MAINTENANCE_CSV, 'a', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow([timestamp, event_type, details, thruster_ids_json, reset_run_hours_str,
-                        device_id_val, device_name_val, device_channel_val, reset_accessory_str])
+    with MAINTENANCE_LOCK:
+        with open(MAINTENANCE_CSV, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([timestamp, event_type, details, thruster_ids_json, reset_run_hours_str,
+                            device_id_val, device_name_val, device_channel_val, reset_accessory_str])
     
     return jsonify({"status": "success", "message": "Maintenance record added"})
 
@@ -2262,30 +2387,31 @@ def update_maintenance():
         return jsonify({"status": "error", "message": "Original and new timestamps are required"}), 400
     
     try:
-        # Read all records
-        records = []
-        with open(MAINTENANCE_CSV, 'r', newline='') as f:
-            reader = csv.reader(f)
-            headers = next(reader)  # Skip header row
-            for row in reader:
-                records.append(row)
+        with MAINTENANCE_LOCK:
+            # Read all records
+            records = []
+            with open(MAINTENANCE_CSV, 'r', newline='') as f:
+                reader = csv.reader(f)
+                headers = next(reader)  # Skip header row
+                for row in reader:
+                    records.append(row)
         
-        # Find and update the matching record
-        updated = False
-        for record in records:
-            if record[0] == original_timestamp:
-                record[0] = new_timestamp
-                updated = True
-                break
+            # Find and update the matching record
+            updated = False
+            for record in records:
+                if record[0] == original_timestamp:
+                    record[0] = new_timestamp
+                    updated = True
+                    break
         
-        if not updated:
-            return jsonify({"status": "error", "message": "Record not found"}), 404
+            if not updated:
+                return jsonify({"status": "error", "message": "Record not found"}), 404
         
-        # Write all records back to the file
-        with open(MAINTENANCE_CSV, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(headers)  # Write header row
-            writer.writerows(records)  # Write all records
+            # Write all records back to the file
+            with open(MAINTENANCE_CSV, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(headers)  # Write header row
+                writer.writerows(records)  # Write all records
         
         return jsonify({"status": "success", "message": "Maintenance record updated"})
     
@@ -2303,27 +2429,28 @@ def delete_maintenance():
         return jsonify({"status": "error", "message": "Timestamp is required"}), 400
     
     try:
-        # Read all records
-        records = []
-        with open(MAINTENANCE_CSV, 'r', newline='') as f:
-            reader = csv.reader(f)
-            headers = next(reader)  # Skip header row
-            for row in reader:
-                records.append(row)
+        with MAINTENANCE_LOCK:
+            # Read all records
+            records = []
+            with open(MAINTENANCE_CSV, 'r', newline='') as f:
+                reader = csv.reader(f)
+                headers = next(reader)  # Skip header row
+                for row in reader:
+                    records.append(row)
         
-        # Filter out the record to delete
-        original_count = len(records)
-        records = [record for record in records if record[0] != timestamp]
+            # Filter out the record to delete
+            original_count = len(records)
+            records = [record for record in records if record[0] != timestamp]
         
-        # Check if we actually found and removed a record
-        if len(records) == original_count:
-            return jsonify({"status": "error", "message": "Record not found"}), 404
+            # Check if we actually found and removed a record
+            if len(records) == original_count:
+                return jsonify({"status": "error", "message": "Record not found"}), 404
         
-        # Write all remaining records back to the file
-        with open(MAINTENANCE_CSV, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(headers)  # Write header row
-            writer.writerows(records)  # Write all records
+            # Write all remaining records back to the file
+            with open(MAINTENANCE_CSV, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(headers)  # Write header row
+                writer.writerows(records)  # Write all records
         
         return jsonify({"status": "success", "message": "Maintenance record deleted"})
     

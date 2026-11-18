@@ -9,7 +9,7 @@ The BlueOS Odometer Extension tracks your vehicle's usage stats and maintenance 
 - **Per-Thruster Run Hours**: Individual run-hour tracking for each thruster
 - **Thruster Duty Cycle**: Average PWM value when armed (duty-cycle indicator)
 - **Battery Monitoring**: Records battery voltage and detects battery swaps
-- **Maintenance Log**: Add and track repair, replacement, and maintenance events
+- **Maintenance Log**: Add and track repair, replacement, and maintenance events, plus BlueOS Self Test runs imported automatically
 - **Data Export**: Download all collected data as CSV files, or a PDF report
 - **Cockpit Widget**: Session distance, total hours and lifetime energy at a glance
 
@@ -160,6 +160,10 @@ The maintenance log supports the following event types, each color-coded for eas
 - **Inspection** (Amber): For system checks and inspections
 - **Thruster Sticking** (Orange): For logging when a thruster motor was found sticking and required minor intervention
 - **Note** (Grey): For general notes or observations
+
+## BlueOS Self Test Integration
+
+When the [BlueOS Self Test](https://github.com/vshie/BlueOS-SelfTest) extension is running on the same vehicle (found through BlueOS's helper service list), Odometer checks it every 5 minutes and adds each finished test run to the service record as a **Self Test** entry, dated when the run started. The entry summarises the overall result, each output tested, network, device and software checks, any power-sensor calibration applied, the operator and serial number, and names the run's log (linked to the full log while Self Test is running). Thrusters that failed are tagged on the record. A run left unfinished is imported once it is 2 hours old. Each run is imported once: deleting an imported entry does not bring it back.
 
 ## Cockpit Widget
 
