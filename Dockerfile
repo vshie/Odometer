@@ -23,7 +23,9 @@ COPY app /app
 RUN mkdir -p /app/data /app/logs
 
 # Bundle frontend dependencies locally for offline use (no internet required at runtime)
-RUN mkdir -p /app/static/vendor/mdi/css /app/static/vendor/mdi/fonts \
+RUN mkdir -p /app/static/vendor/mdi/css /app/static/vendor/mdi/fonts /app/static/vendor/fonts \
+    && curl -fsSL -o /app/static/vendor/fonts/vt323-latin-400-normal.woff2 \
+       "https://cdn.jsdelivr.net/npm/@fontsource/vt323@5.2.7/files/vt323-latin-400-normal.woff2" \
     && curl -fsSL -o /app/static/vendor/vuetify.min.css \
        "https://cdn.jsdelivr.net/npm/vuetify@2.6.14/dist/vuetify.min.css" \
     && curl -fsSL -o /app/static/vendor/mdi/css/materialdesignicons.min.css \

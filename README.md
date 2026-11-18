@@ -94,7 +94,16 @@ The extension detects vehicle type from the MAVLink HEARTBEAT message and tracks
 
 Thrusters are mapped to output channels from the autopilot's `SERVOn_FUNCTION` parameters (Motor1-8 for ArduSub, ThrottleLeft/ThrottleRight for boats), so a 6-thruster BlueROV2 shows 6 thrusters. Until the parameters can be read, ArduSub defaults to 8 thrusters and boats to 2 on channels 1..N.
 
-Output PWM is sampled every 5 seconds. A thruster's run time only accrues while the vehicle is armed and that thruster's output is more than 25 us from neutral (1500 us), so each thruster's hours reflect when it actually ran. The "hard use" session flag only looks at thruster channels, so lights or a gripper don't trigger it. The UI shows position grids to correlate numbers with physical layout (e.g. vertical vs horizontal thrusters for ROVs, port/starboard for boats).
+Output PWM is sampled every 5 seconds. A thruster's run time only accrues while the vehicle is armed and that thruster's output is more than 25 us from neutral (1500 us), so each thruster's hours reflect when it actually ran.
+
+### Hard Use
+
+A session is flagged as hard use when either:
+
+- its peak battery current (sampled once per second while armed) exceeds **70 A on ArduSub** or **22 A on ArduRover/boats**, or
+- a thruster/motor was above **80% throttle** (more than 320 us from neutral) for more than **20% of the armed time**.
+
+Older sessions, recorded before throttle time was tracked, are judged on peak current alone. The flags on recorded sessions are re-evaluated whenever the rule or the vehicle type changes. The UI shows position grids to correlate numbers with physical layout (e.g. vertical vs horizontal thrusters for ROVs, port/starboard for boats).
 
 Accessories (added via **Add Device**) accrue run time whenever their output differs from their configured **Off PWM** (default 1100 us, typical for lights; use 1500 for a gripper).
 
@@ -139,6 +148,10 @@ The maintenance log supports the following event types, each color-coded for eas
 - **Inspection** (Amber): For system checks and inspections
 - **Thruster Sticking** (Orange): For logging when a thruster motor was found sticking and required minor intervention
 - **Note** (Grey): For general notes or observations
+
+## Cockpit Widget
+
+The extension offers a small Cockpit widget (listed in Cockpit's edit menu with the other extension widgets) showing this session's distance, total hours and lifetime kWh. It is advertised through `cockpit_extras.json` and loads through BlueOS's extension proxy, so a placed widget keeps working after the extension is reinstalled. Odometer also streams its counters to Cockpit's data lake over a WebSocket on port 8765.
 
 ## Requirements
 

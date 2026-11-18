@@ -97,7 +97,13 @@ ACCESSORY_DEFAULT_OFF_PWM = 1100  # Typical "off" output for lights; configurabl
 MISSIONS_HEADERS = ['start_time', 'end_time', 'start_voltage', 'end_voltage',
                     'start_cpu_temp', 'end_cpu_temp', 'total_ah', 'start_uptime', 'end_uptime',
                     'voltage_min', 'max_pwm_deviation', 'hard_use',
-                    'distance_m', 'max_current_a', 'avg_current_a', 'max_speed', 'avg_speed', 'wh']
+                    'distance_m', 'max_current_a', 'avg_current_a', 'max_speed', 'avg_speed', 'wh',
+                    'mav_type', 'high_throttle_s', 'armed_s']
+# Hard use: peak current over the vehicle type's limit, or a thruster/motor above HARD_USE_THROTTLE for more
+# than HARD_USE_THROTTLE_SHARE of armed time
+HARD_USE_CURRENT_A = {MAV_TYPE_SUBMARINE: 70.0, MAV_TYPE_GROUND_ROVER: 22.0, MAV_TYPE_SURFACE_BOAT: 22.0}
+HARD_USE_THROTTLE = 0.8  # Fraction of full throttle, i.e. |pwm - neutral| > 0.8 x 400 us
+HARD_USE_THROTTLE_SHARE = 0.2
 
 # ArduSub flight mode numbers (custom_mode) -> display name
 ARDUSUB_MODES = {
@@ -158,7 +164,8 @@ REGISTER_SERVICE = {
     "company": "Blue Robotics",
     "version": "0.1.0",
     "webpage": "https://github.com/vshie/Odometer",
-    "api": "https://github.com/bluerobotics/BlueOS-docker"
+    "api": "https://github.com/bluerobotics/BlueOS-docker",
+    "extras": {"cockpit": "/cockpit_extras.json"}
 }
 
 async def websocket_handler(websocket):
@@ -282,6 +289,7 @@ class OdometerService:
         self._auto_populate_vehicle_name()
         self.close_previous_session_on_startup()
         self.migrate_energy_history()
+        self._refresh_hard_use()
         self.detect_startup()
         
         # Start the update thread
@@ -484,7 +492,7 @@ class OdometerService:
                 writer.writerow(new_headers)
                 for row in rows:
                     # Pre-wh rows get an empty wh so the UI falls back to estimating from Ah
-                    pad = ['' if h == 'wh' else '0' for h in new_headers[len(row):]]
+                    pad = ['' if h in ('wh', 'mav_type') else '0' for h in new_headers[len(row):]]
                     writer.writerow(row + pad)
                 f.flush()
                 os.fsync(f.fileno())
@@ -526,6 +534,10 @@ class OdometerService:
                                     m['avg_speed'] = float(row[16]) if row[16].strip() else 0.0
                                 if len(row) >= 18 and row[17].strip():
                                     m['wh'] = float(row[17])
+                                if len(row) >= 21:
+                                    m['mav_type'] = int(row[18]) if row[18].strip() else -1
+                                    m['high_throttle_s'] = float(row[19]) if row[19].strip() else 0.0
+                                    m['armed_s'] = float(row[20]) if row[20].strip() else 0.0
                                 self.missions.append(m)
                 logger.info(f"Loaded {len(self.missions)} missions from {MISSIONS_CSV}")
             except Exception as e:
@@ -668,6 +680,7 @@ class OdometerService:
             if (ts['mav_type'] == mav_type and ts.get('channels') == channels and
                     ts.get('channel_source') == source and len(ts['thrusters']) == len(channels)):
                 return
+            type_changed = ts['mav_type'] != mav_type
             ts['mav_type'] = mav_type
             ts['thruster_count'] = len(channels)
             ts['channels'] = list(channels)
@@ -679,6 +692,9 @@ class OdometerService:
             ]
             logger.info(f"Thruster layout: {len(channels)} on channels {channels} (from {source})")
         self.save_thruster_stats()
+        if type_changed:
+            # Older sessions are judged against the vehicle's type; re-judge now that it's known
+            self._refresh_hard_use()
 
     def get_thruster_count_from_mav_type(self, mav_type: int) -> int:
         """Default thruster count until SERVOn_FUNCTION params are read. ArduSub: 8, Boat/Rover: 2"""
@@ -805,14 +821,30 @@ class OdometerService:
             self.save_thruster_stats()
     
     def _is_hard_use(self, mission: dict) -> bool:
-        """Hard use: rapid discharge (voltage drop) or high duty (|avg_pwm - 1500| > 300)"""
-        start_v = mission.get('start_voltage', 0) or 0
-        end_v = mission.get('end_voltage', 0) or 0
-        voltage_drop = start_v - end_v if (start_v > 0 and end_v > 0) else 0
-        rapid_discharge = voltage_drop > 2.0  # >2V drop in session
-        max_dev = mission.get('max_pwm_deviation', 0) or 0
-        high_duty = max_dev > 300
-        return rapid_discharge or high_duty
+        """Hard use: peak current above HARD_USE_CURRENT_A for the vehicle type, or a thruster/motor above
+        80% throttle for more than 20% of armed time. Sessions recorded before throttle time was tracked
+        are judged on current alone, against the vehicle's current type."""
+        mav_type = mission.get('mav_type')
+        if mav_type in (None, '', -1):
+            mav_type = self.thruster_stats.get('mav_type', -1)
+        limit = HARD_USE_CURRENT_A.get(int(mav_type))
+        if limit is not None and float(mission.get('max_current_a') or 0) > limit:
+            return True
+        armed_s = float(mission.get('armed_s') or 0)
+        return armed_s > 0 and float(mission.get('high_throttle_s') or 0) / armed_s > HARD_USE_THROTTLE_SHARE
+
+    def _refresh_hard_use(self) -> None:
+        """Re-judge every recorded session with the current hard-use rule, rewriting the CSV if any changed."""
+        with self.stats_lock:
+            changed = False
+            for m in self.missions:
+                hard = self._is_hard_use(m)
+                if hard != bool(m.get('hard_use')):
+                    m['hard_use'] = hard
+                    changed = True
+            if changed:
+                self._rewrite_missions_csv()
+                logger.info("Re-evaluated hard-use flags on recorded sessions")
     
     def delete_mission(self, start_time: str) -> bool:
         """Delete a mission by start_time. Returns True if found and deleted."""
@@ -851,7 +883,10 @@ class OdometerService:
             str(m.get('avg_current_a', 0)),
             str(m.get('max_speed', 0)),
             str(m.get('avg_speed', 0)),
-            str(m['wh']) if m.get('wh') is not None else ''
+            str(m['wh']) if m.get('wh') is not None else '',
+            str(m['mav_type']) if m.get('mav_type') not in (None, -1) else '',
+            str(m.get('high_throttle_s', 0)),
+            str(m.get('armed_s', 0))
         ]
 
     def _rewrite_missions_csv(self) -> None:
@@ -1236,17 +1271,21 @@ class OdometerService:
                         if abs(pwm - acc.get('off_pwm', ACCESSORY_DEFAULT_OFF_PWM)) > PWM_ACTIVE_DEADBAND:
                             acc['run_seconds'] = acc.get('run_seconds', 0.0) + dt
                             acc['run_minutes'] = int(acc['run_seconds'] // 60)
-                # Session hard-use metric: thruster/motor channels only (lights etc. sit far from 1500 at rest)
-                if max_dev > 0:
+                # Session hard-use metrics: thruster/motor channels only (lights etc. sit far from 1500 at rest)
+                if is_armed:
                     with self.stats_lock:
                         m = self.stats['current_mission']
+                        m['armed_s'] = m.get('armed_s', 0.0) + dt
+                        if max_dev > HARD_USE_THROTTLE * 400:
+                            m['high_throttle_s'] = m.get('high_throttle_s', 0.0) + dt
                         if max_dev > m.get('max_pwm_deviation', 0):
                             m['max_pwm_deviation'] = max_dev
             except Exception as e:
                 logger.debug(f"PWM sample loop: {e}")
 
     def distance_sample_loop(self):
-        """Sample ground speed at 1 Hz when armed; integrate over the real elapsed time for distance."""
+        """While armed, sample at 1 Hz: ground speed, integrated over the real elapsed time for distance, and
+        battery current, so short peaks count toward the session's max current (hard use)."""
         last_sample = time.monotonic()
         while not self.stop_event.is_set():
             time.sleep(DISTANCE_SAMPLE_INTERVAL)
@@ -1256,6 +1295,12 @@ class OdometerService:
             try:
                 if not self.get_armed_status():
                     continue
+                battery = self._get_message('BATTERY_STATUS')
+                current = battery.get('current_battery', -1) if battery else -1
+                if current is not None and current != -1:
+                    with self.stats_lock:
+                        m = self.stats['current_mission']
+                        m['max_current_a'] = max(m.get('max_current_a', 0), abs(int(current)) / 100.0)
                 speed_m_s, hdop = self.get_ground_speed_m_s()
                 if speed_m_s < self._distance_speed_floor(hdop):
                     continue  # Velocity noise while holding station would otherwise accumulate
@@ -1291,6 +1336,9 @@ class OdometerService:
             'max_speed': 0.0,
             'speed_sum': 0.0,
             'speed_count': 0,
+            'mav_type': -1,
+            'armed_s': 0.0,  # Armed time covered by thruster PWM samples
+            'high_throttle_s': 0.0,  # ...of which some thruster/motor was above HARD_USE_THROTTLE
             # Battery-monitor readings when this session started; energy is measured from here so an
             # extension restart mid-battery doesn't count the same energy again
             'base_mah': None,
@@ -1342,7 +1390,10 @@ class OdometerService:
             'max_current_a': float(session.get('max_current_a', 0) or 0),
             'avg_current_a': (float(session.get('current_sum', 0) or 0) / c_count) if c_count > 0 else 0.0,
             'max_speed': float(session.get('max_speed', 0) or 0),
-            'avg_speed': (float(session.get('speed_sum', 0) or 0) / s_count) if s_count > 0 else 0.0
+            'avg_speed': (float(session.get('speed_sum', 0) or 0) / s_count) if s_count > 0 else 0.0,
+            'mav_type': int(session.get('mav_type', -1) if session.get('mav_type') is not None else -1),
+            'armed_s': float(session.get('armed_s', 0) or 0),
+            'high_throttle_s': float(session.get('high_throttle_s', 0) or 0)
         }
         # A session persisted by a pre-v2 version has no Wh, and its Ah may be inflated: leave both to
         # migrate_energy_history, which runs right after this at startup
@@ -1419,6 +1470,8 @@ class OdometerService:
                 m = self.stats['current_mission']
                 if m.get('start_time') is None:
                     m = self._start_session(now_iso, current_voltage, current_cpu_temp)
+                if mav_type >= 0:
+                    m['mav_type'] = mav_type
 
                 # Peak/avg current and speed
                 if current_battery_a > 0:
@@ -2330,6 +2383,33 @@ def export_pdf():
     except Exception as e:
         logger.error(f"Error generating PDF: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/cockpit_extras.json')
+def cockpit_extras():
+    """Offer the Odometer widget to Cockpit (listed in its edit menu with the other extension widgets).
+
+    Cockpit loads it through BlueOS's /extensionv2/ proxy (useExtensionPathAsBaseUrl), so a placed widget
+    keeps working when a reinstall gives the extension a new host port. The widget uses relative URLs only.
+    """
+    resp = jsonify({
+        "targetCockpitApiVersion": "1.0.0",
+        "targetSystem": "Cockpit",
+        "widgets": [{
+            "name": "Odometer",
+            "iframeUrl": "/widget",
+            "iconUrl": "/static/Odometer_logo.png",
+            "useExtensionPathAsBaseUrl": True,
+        }],
+    })
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    return resp
+
+
+@app.route('/widget')
+def widget():
+    """Compact readout for Cockpit: session distance, total hours, lifetime kWh."""
+    return app.send_static_file('widget.html')
+
 
 @app.route('/register_service')
 def register_service():

@@ -165,12 +165,14 @@ def generate_report(
     hard_use_missions = [m for m in missions if m.get("hard_use")]
     if hard_use_missions:
         story.append(Paragraph("Hard-Use Sessions", heading_style))
-        story.append(Paragraph("Sessions with rapid discharge or high duty (>300 us from neutral):", styles["Normal"]))
+        story.append(Paragraph("Sessions with peak current over the vehicle's limit (70 A ROV, 22 A boat) "
+                               "or a motor above 80% throttle for more than 20% of armed time:", styles["Normal"]))
         for m in hard_use_missions[:10]:
+            armed_s = m.get('armed_s', 0) or 0
+            throttle = f", {100 * (m.get('high_throttle_s', 0) or 0) / armed_s:.0f}% of armed time above 80% throttle" if armed_s else ""
             story.append(Paragraph(
                 f"• {_fmt_iso(m.get('start_time'))} – {_fmt_iso(m.get('end_time'))} "
-                f"(ΔV: {m.get('start_voltage', 0):.1f}→{m.get('end_voltage', 0):.1f}V, "
-                f"max PWM dev: {m.get('max_pwm_deviation', 0):.0f} us)",
+                f"(max {m.get('max_current_a', 0):.1f} A{throttle})",
                 styles["Normal"],
             ))
         story.append(Spacer(1, 8))

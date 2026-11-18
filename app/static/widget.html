@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Odometer</title>
+<style>
+/* Cockpit widget: a strip of green-bar printout with this session's distance, total hours and lifetime kWh.
+   All URLs are relative so it works through BlueOS's /extensionv2/ proxy (useExtensionPathAsBaseUrl). */
+@font-face {
+    font-family: 'VT323';
+    src: url('static/vendor/fonts/vt323-latin-400-normal.woff2') format('woff2');
+    font-display: swap;
+}
+html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+.paper {
+    box-sizing: border-box; height: 100%; padding: 0 14px; position: relative;
+    display: grid; grid-template-rows: auto auto; align-content: center;
+    background: #f4f1e6; color: #24331f; border-radius: 3px;
+    font-family: 'VT323', 'Courier New', monospace;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .45);
+}
+/* Tractor-feed holes down both edges */
+.paper::before, .paper::after {
+    content: ''; position: absolute; top: 0; bottom: 0; width: 14px;
+    background: radial-gradient(circle at 7px 8px, #3a3a3a 0 2.5px, transparent 3px) 0 0 / 14px 16px repeat-y;
+}
+.paper::before { left: 0; border-right: 1px dashed rgba(0, 0, 0, .15); }
+.paper::after { right: 0; border-left: 1px dashed rgba(0, 0, 0, .15); }
+.row { display: grid; grid-template-columns: repeat(3, 1fr); padding: 0 6px; }
+.head { font-size: clamp(10px, 15vh, 17px); border-bottom: 1px solid rgba(0, 0, 0, .25); letter-spacing: .04em; }
+.vals { background: #d7ecd5; font-size: clamp(15px, 34vh, 38px); line-height: 1.1; }
+.row > div { text-align: center; padding: 1px 4px; white-space: nowrap; }
+.unit { font-size: .6em; margin-left: 2px; }
+.offline .vals { color: #9a3a2a; }
+</style>
+</head>
+<body>
+<div class="paper" id="paper" title="Odometer">
+    <div class="row head"><div>TRIP</div><div>TOTAL</div><div>ENERGY</div></div>
+    <div class="row vals">
+        <div><span id="trip">--</span><span class="unit">KM</span></div>
+        <div><span id="hours">--</span><span class="unit">H</span></div>
+        <div><span id="kwh">--</span><span class="unit">KWH</span></div>
+    </div>
+</div>
+<script>
+async function refresh() {
+    const paper = document.getElementById('paper');
+    try {
+        const resp = await fetch('stats', { cache: 'no-store' });
+        const st = (await resp.json()).data;
+        const tripKm = ((st.current_mission || {}).distance_m || 0) / 1000;
+        document.getElementById('trip').textContent = tripKm.toFixed(tripKm < 10 ? 2 : 1);
+        document.getElementById('hours').textContent = (st.total_minutes / 60).toFixed(1);
+        document.getElementById('kwh').textContent = (st.total_wh_consumed / 1000).toFixed(2);
+        const online = (st.connection || {}).vehicle_online;
+        paper.classList.toggle('offline', !online);
+        paper.title = online ? 'Odometer' : 'Odometer: vehicle offline (values as last recorded)';
+    } catch (e) {
+        paper.classList.add('offline');
+        paper.title = 'Odometer: extension unreachable';
+    }
+}
+refresh();
+setInterval(() => { if (!document.hidden) refresh(); }, 5000);
+</script>
+</body>
+</html>

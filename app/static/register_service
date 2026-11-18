@@ -5,5 +5,6 @@
     "company": "Blue Robotics",
     "version": "0.1.0",
     "webpage": "https://github.com/vshie/Odometer",
-    "api": "https://github.com/bluerobotics/BlueOS-docker"
+    "api": "https://github.com/bluerobotics/BlueOS-docker",
+    "extras": {"cockpit": "/cockpit_extras.json"}
 }
