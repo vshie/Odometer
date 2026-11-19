@@ -2,6 +2,8 @@
 
 The BlueOS Odometer Extension tracks your vehicle's usage stats and maintenance history, providing you with valuable data about your vehicle's operational life and history. When understanding failure rates and the cost of system operations vs. time, data is key! This extension aspires to be like the odometer of your car - but perhaps easier to fiddle with! 
 
+![Odometer interface: instrument cluster, oscilloscope, time in mode, motor run hours, trip log and service record](https://raw.githubusercontent.com/vshie/Odometer/main/docs/interface.png)
+
 ## Features
 
 - **Uptime Tracking**: Counts total minutes of vehicle operation
