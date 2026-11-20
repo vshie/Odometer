@@ -169,7 +169,7 @@ REGISTER_SERVICE = {
     "description": "Track vehicle usage statistics, armed time, battery swaps, and maintenance history with beautiful visualizations",
     "icon": "mdi-counter",
     "company": "Blue Robotics",
-    "version": "2.0.0",
+    "version": "2.0.1",
     "webpage": "https://github.com/vshie/Odometer",
     "api": "https://github.com/bluerobotics/BlueOS-docker",
     "extras": {"cockpit": "/cockpit_extras.json"}
@@ -2558,20 +2558,32 @@ def export_pdf():
 
 @app.route('/cockpit_extras.json')
 def cockpit_extras():
-    """Offer the Odometer widget to Cockpit (listed in its edit menu with the other extension widgets).
+    """Offer Odometer's widgets to Cockpit (listed in its edit menu with the other extension widgets): the trip,
+    hours and energy strip, and the service record.
 
-    Cockpit loads it through BlueOS's /extensionv2/ proxy (useExtensionPathAsBaseUrl), so a placed widget
-    keeps working when a reinstall gives the extension a new host port. The widget uses relative URLs only.
+    Cockpit loads them through BlueOS's /extensionv2/ proxy (useExtensionPathAsBaseUrl), so a placed widget
+    keeps working when a reinstall gives the extension a new host port. The widgets use relative URLs only.
     """
     resp = jsonify({
         "targetCockpitApiVersion": "1.0.0",
         "targetSystem": "Cockpit",
-        "widgets": [{
-            "name": "Odometer",
-            "iframeUrl": "/widget",
-            "iconUrl": "/static/Odometer_logo.png",
-            "useExtensionPathAsBaseUrl": True,
-        }],
+        "widgets": [
+            {
+                "name": "Odometer",
+                "iframeUrl": "/widget",
+                "iconUrl": "/static/widget_icon.png",
+                "useExtensionPathAsBaseUrl": True,
+            },
+            {
+                # Cockpit wraps this in its own collapsible container titled collapsibleContainerName
+                "name": "Odometer Service Record",
+                "iframeUrl": "/service-widget",
+                "iconUrl": "/static/widget_icon.png",
+                "useExtensionPathAsBaseUrl": True,
+                "collapsibleContainerName": "Service Record",
+                "startCollapsed": False,
+            },
+        ],
     })
     resp.headers['Access-Control-Allow-Origin'] = '*'
     return resp
@@ -2581,6 +2593,13 @@ def cockpit_extras():
 def widget():
     """Compact readout for Cockpit: session distance, total hours, lifetime kWh."""
     return app.send_static_file('widget.html')
+
+
+@app.route('/service-widget')
+def service_widget():
+    """Cockpit widget listing the service record and adding to it. Served from the root, like /widget, so its
+    relative API URLs resolve through BlueOS's extension proxy."""
+    return app.send_static_file('service-widget.html')
 
 
 @app.route('/register_service')

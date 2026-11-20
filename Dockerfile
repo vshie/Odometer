@@ -48,7 +48,7 @@ EXPOSE 8765/tcp
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:80/stats || exit 1
 
-LABEL version="2.0.0"
+LABEL version="2.0.1"
 LABEL permissions='\
 {\
   "ExposedPorts": {\

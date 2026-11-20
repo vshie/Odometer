@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Odometer Service Record</title>
+<!-- Cockpit widget: lists and adds service records. Cockpit's own collapsible container (collapsibleContainerName in
+     cockpit_extras.json) provides the title bar and collapse; this page has none of its own. All URLs are relative so it
+     works through BlueOS's /extensionv2/ proxy. -->
+<link rel="stylesheet" href="static/service-record.css">
+<style>
+:root {
+    /* The night dash palette from the main page */
+    --bg: #05090c;
+    --panel: #10161b;
+    --panel-hi: #18212a;
+    --ink: #d8d2c4;
+    --ink-dim: #8d877a;
+    --texture: repeating-linear-gradient(45deg, rgba(255,255,255,.012) 0 2px, rgba(0,0,0,.02) 2px 4px);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+    font-family: 'Roboto Condensed', 'Arial Narrow', sans-serif; color: var(--ink);
+    background: var(--panel); background-image: var(--texture), linear-gradient(180deg, var(--panel-hi), var(--panel));
+    display: flex; flex-direction: column; padding: 8px 10px; overflow: hidden;
+}
+.label-maker { margin-top: 0; flex: none; }
+.maint { flex: 1; max-height: none; margin-top: 10px; padding-right: 4px; }
+.mrow .details { font-size: 15px; }
+.dymo { font-size: 13px; }
+/* Widgets are narrow: stack each record (date, label, details) */
+.mrow { grid-template-columns: 1fr; gap: 3px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,.06); }
+.mrow .when { font-size: 12px; }
+.label-maker .print { flex: 1 1 100%; padding: 8px; }
+</style>
+</head>
+<body>
+<div class="label-maker" id="label-maker"></div>
+<div class="maint" id="maint"><div class="empty">Loading…</div></div>
+<div class="toast" id="toast"></div>
+
+<script src="static/service-record.js"></script>
+<script>
+const S = { records: [], thrusters: null, stats: null, loaded: false };
+const serviceRecord = createServiceRecord({
+    formEl: document.getElementById('label-maker'), listEl: document.getElementById('maint'), editable: false,
+    getRecords: () => S.records, getThrusters: () => S.thrusters, getStats: () => S.stats,
+    reload: () => load(false),
+});
+
+async function load(full) {
+    const [rec, thr, st] = await Promise.allSettled([api('maintenance'), api('thrusters'), api('stats')]);
+    if (thr.status === 'fulfilled') S.thrusters = thr.value.data;
+    if (st.status === 'fulfilled') S.stats = st.value.data;
+    if (rec.status !== 'fulfilled') {
+        // Nothing stale: say so plainly
+        document.getElementById('label-maker').innerHTML = '';
+        document.getElementById('maint').innerHTML = '<div class="empty">Odometer unreachable.</div>';
+        S.loaded = false;
+        return;
+    }
+    S.records = rec.value.data;
+    // Draw the form only on first load (or after it was unreachable), so a periodic refresh never clears typing
+    if (full || !S.loaded) serviceRecord.render(); else serviceRecord.renderList();
+    S.loaded = true;
+}
+
+load(true);
+// New records from the main page and imported Self Test runs appear without reopening the widget
+setInterval(() => { if (!document.hidden) load(false); }, 30000);
+</script>
+</body>
+</html>

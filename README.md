@@ -36,7 +36,7 @@ To install Odometer manually from the BlueOS Extension Manager, choose **Install
 
 ```text
 Image: vshie/blueos-odometer
-Tag: 2.0.0
+Tag: 2.0.1
 ```
 
 (Use the `beta` tag for the latest development build.)
@@ -169,9 +169,14 @@ The maintenance log supports the following event types, each color-coded for eas
 
 When the [BlueOS Self Test](https://github.com/vshie/BlueOS-SelfTest) extension is running on the same vehicle (found through BlueOS's helper service list), Odometer checks it every 5 minutes and adds each finished test run to the service record as a **Self Test** entry, dated when the run started. The entry summarises the overall result, each output tested, network, device and software checks, any power-sensor calibration applied, the operator and serial number, and names the run's log (linked to the full log while Self Test is running). Thrusters that failed are tagged on the record. A run left unfinished is imported once it is 2 hours old. Each run is imported once: deleting an imported entry does not bring it back.
 
-## Cockpit Widget
+## Cockpit Widgets
 
-The extension offers a small Cockpit widget (listed in Cockpit's edit menu with the other extension widgets) showing this session's distance, total hours and lifetime kWh. It is advertised through `cockpit_extras.json` and loads through BlueOS's extension proxy, so a placed widget keeps working after the extension is reinstalled. Odometer also streams its counters to Cockpit's data lake over a WebSocket on port 8765.
+Odometer offers two widgets in Cockpit's edit menu, alongside the other extension widgets:
+
+- **Odometer:** a small strip with this session's distance, total hours and lifetime kWh.
+- **Odometer Service Record:** the service record, newest first, with the same type filter and form as the main page for adding records (including thruster tags and run-hour resets). It sits in Cockpit's collapsible container titled "Service Record" and starts expanded; collapse it from Cockpit's title bar. Re-dating and deleting records stay on the main page.
+
+Both are advertised through `cockpit_extras.json` and load through BlueOS's extension proxy, so a placed widget keeps working after the extension is reinstalled. Odometer also streams its counters to Cockpit's data lake over a WebSocket on port 8765.
 
 ## Requirements
 

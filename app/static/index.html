@@ -4,15 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Odometer</title>
+<link rel="stylesheet" href="static/service-record.css">
 <style>
-/* Fonts are bundled into the image (see Dockerfile) so the page works offline */
-@font-face { font-family: 'Roboto Condensed'; font-weight: 400; font-display: swap; src: url('static/vendor/fonts/roboto-condensed-latin-400-normal.woff2') format('woff2'); }
-@font-face { font-family: 'Roboto Condensed'; font-weight: 500; font-display: swap; src: url('static/vendor/fonts/roboto-condensed-latin-500-normal.woff2') format('woff2'); }
-@font-face { font-family: 'Roboto Condensed'; font-weight: 600; font-display: swap; src: url('static/vendor/fonts/roboto-condensed-latin-600-normal.woff2') format('woff2'); }
-@font-face { font-family: 'Roboto Condensed'; font-weight: 700; font-display: swap; src: url('static/vendor/fonts/roboto-condensed-latin-700-normal.woff2') format('woff2'); }
-@font-face { font-family: 'Roboto Mono'; font-weight: 400; font-display: swap; src: url('static/vendor/fonts/roboto-mono-latin-400-normal.woff2') format('woff2'); }
-@font-face { font-family: 'Roboto Mono'; font-weight: 500; font-display: swap; src: url('static/vendor/fonts/roboto-mono-latin-500-normal.woff2') format('woff2'); }
-
 /* ---------- Theme tokens ---------- */
 :root, :root[data-theme="night"] {
     --bg: #05090c;
@@ -279,7 +272,6 @@ body {
 .segs i.on { background: #3dff7a; box-shadow: 0 0 5px rgba(61,255,122,.7); }
 .segs i.on.y { background: #ffcf3a; box-shadow: 0 0 5px rgba(255,207,58,.7); }
 .segs i.on.r { background: #ff4b2f; box-shadow: 0 0 5px rgba(255,75,47,.7); }
-.empty { color: var(--ink-dim); font-size: 15px; margin-top: 12px; }
 
 .motors { display: grid; grid-template-columns: minmax(0, 1fr) 120px minmax(0, 1fr); align-items: center; gap: 8px; margin-top: 8px; }
 .motors svg { width: 100%; }
@@ -307,54 +299,8 @@ body {
 .printout .del:hover { color: #b5321c; }
 .table-scroll { overflow: auto; max-height: 460px; }
 
-/* Dymo labels */
-.maint { display: grid; gap: 10px; margin-top: 10px; max-height: 520px; overflow-y: auto; }
-.mrow { display: grid; grid-template-columns: 124px auto 1fr auto; gap: 12px; align-items: center; }
-.mrow .when { font-family: 'Roboto Mono', monospace; font-size: 14px; color: var(--ink-dim); }
-.dymo {
-    display: inline-block; padding: 3px 10px 2px; border-radius: 3px; font-weight: 700; letter-spacing: .16em;
-    text-transform: uppercase; font-size: 15px; color: #f6f6f6; white-space: nowrap;
-    text-shadow: 0 -1px 0 rgba(0,0,0,.6), 0 1px 0 rgba(255,255,255,.25);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,.25), 0 1px 2px rgba(0,0,0,.5);
-}
-.mrow .details { font-size: 17px; line-height: 1.35; overflow-wrap: anywhere; }
-.mrow .details .tag { font-size: 14px; color: var(--ink-dim); }
 .panel-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .panel-head .legend { margin-right: auto; }
-.chip-btn {
-    font: 600 12px 'Roboto Condensed', sans-serif; letter-spacing: .14em; text-transform: uppercase; text-decoration: none;
-    color: var(--ink); padding: 5px 10px; border-radius: 4px; cursor: pointer; border: 0;
-    background: linear-gradient(180deg, var(--panel-hi), var(--panel)); box-shadow: 0 2px 0 rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.12);
-}
-.chip-btn:active { transform: translateY(1px); box-shadow: 0 1px 0 rgba(0,0,0,.45); }
-.chip-btn:disabled { opacity: .4; cursor: default; }
-.label-maker input:disabled { opacity: .6; }
-.chip-btn.go { background: linear-gradient(180deg, #2f6b45, #1c4029); color: #eafff1; }
-.chip-btn.stop { background: linear-gradient(180deg, #8b2a1d, #5a1a12); color: #ffecea; }
-.label-maker {
-    margin-top: 10px; padding: 10px; border-radius: 8px; display: grid; gap: 8px;
-    background: rgba(0,0,0,.18); box-shadow: inset 0 2px 5px rgba(0,0,0,.45);
-}
-:root[data-theme="bench"] .label-maker { background: rgba(0,0,0,.06); box-shadow: inset 0 2px 4px rgba(0,0,0,.18); }
-.lm-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.lm-row > * { flex: 1 1 140px; }
-.label-maker select, .label-maker input[type=text], .label-maker input[type=number], .mrow input[type=datetime-local] {
-    font: 14px 'Roboto Mono', monospace; color: #7dffa8; background: #060807; border: 1px solid rgba(255,255,255,.12);
-    border-radius: 4px; padding: 5px 8px; min-width: 0;
-}
-.label-maker label { font-size: 15px; display: flex; align-items: center; gap: 6px; flex: 0 1 auto; }
-.label-maker .print { flex: 0 0 auto; }
-.mrow .acts { display: flex; gap: 6px; }
-.mrow .acts button { min-width: 28px; height: 26px; padding: 0 6px; font-size: 14px; }
-.confirm { font-size: 15px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-
-/* Notices: a strip of Dymo tape */
-.toast { position: fixed; left: 50%; bottom: 18px; transform: translate(-50%, calc(100% + 40px)); transition: transform .3s; z-index: 10;
-    background: #2b2b2b; color: #f6f6f6; padding: 8px 16px; border-radius: 3px; font-weight: 700; letter-spacing: .12em;
-    text-transform: uppercase; font-size: 13px; box-shadow: 0 3px 10px rgba(0,0,0,.5); max-width: 90vw; }
-.toast.show { transform: translate(-50%, 0); }
-.toast.error { background: #8b2a1d; }
-
 @media (max-width: 900px) {
     /* Emblem on top, then nameplate + theme switch, then the lamps in one row */
     .header { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "emblem emblem" "plate toggle" "lamps lamps"; row-gap: 12px; }
@@ -373,8 +319,6 @@ body {
     .lower { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 520px) {
-    .mrow .acts { grid-column: 1 / -1; }
-    .label-maker .print { flex: 1 1 100%; padding: 10px; font-size: 14px; }
     .crt { aspect-ratio: 1 / 1; }
     #osd-cursor { display: none; }
     .drum.big { width: 26px; height: 40px; } .drum.big .strip div { height: 40px; line-height: 40px; font-size: 30px; }
@@ -384,7 +328,6 @@ body {
     .crt-bezel { padding: 8px; border-radius: 14px; }
     .header { gap: 10px; } .emblem { font-size: 22px; letter-spacing: .24em; }
     .knob-dial { transform: scale(.85); }
-    .mrow { grid-template-columns: 1fr; gap: 4px; }
 }
 </style>
 </head>
@@ -501,31 +444,15 @@ body {
 </div>
 <div class="toast" id="toast"></div>
 
+<script src="static/service-record.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const PARAMS = new URLSearchParams(location.search);
 const STATIC = PARAMS.has('static');  // No animation (screenshots)
 if (STATIC) document.documentElement.classList.add('static');
-const esc = t => String(t ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const parseTime = s => new Date(String(s).replace(' ', 'T'));
 
 /* ---------- Data from the extension (relative URLs, so it also works behind a proxy path) ---------- */
 const S = { stats: null, missions: null, thrusters: null, accessories: [], maintenance: [], series: {}, vehicleName: '' };
-async function api(path, body) {
-    const opts = body === undefined ? { cache: 'no-store' }
-        : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
-    const resp = await fetch(path, opts);
-    const json = await resp.json().catch(() => ({}));
-    if (!resp.ok || json.status === 'error') throw new Error(json.message || `${path}: HTTP ${resp.status}`);
-    return json;
-}
-let toastTimer = 0;
-function toast(text, error = false) {
-    const t = $('toast');
-    t.textContent = text; t.className = `toast show ${error ? 'error' : ''}`;
-    clearTimeout(toastTimer); toastTimer = setTimeout(() => t.className = 'toast', 3500);
-}
-
 /* ---------- Weathering textures (SVG noise) ---------- */
 const svgUri = svg => `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 // Salt: fine white specks gated by low-frequency patches, so it reads as dried crust
@@ -964,14 +891,8 @@ function vuMeter(modes) {
 }
 
 /* ---------- Motors / thrusters and devices ---------- */
-function thrusterName(id) {
-    const layout = (S.thrusters && S.thrusters.layout) || {};
-    for (const grid of layout.grids || []) if (grid.names && grid.names[id]) return grid.names[id];
-    return `${layout.unit === 'motor' ? 'Motor' : 'Thruster'} ${id}`;
-}
-function unitWord() {
-    return ((S.thrusters && S.thrusters.layout) || {}).unit === 'motor' ? 'Motor' : 'Thruster';
-}
+const thrusterName = id => thrusterNameOf(S.thrusters, id);
+const unitWord = () => unitWordOf(S.thrusters);
 function renderMotors() {
     const data = S.thrusters;
     $('motors-legend').textContent = `${unitWord()}s · run hours`;
@@ -1064,135 +985,31 @@ function renderTrips() {
     });
 }
 
-/* ---------- Service record ---------- */
-// The BlueOS Self Test extension, as seen from this browser (same host, its own port), or null if not running
-function selftestBase() {
-    const url = S.stats && S.stats.selftest && S.stats.selftest.url;
-    if (!url) return null;
-    return `${location.protocol}//${location.hostname}:${new URL(url).port}`;
-}
+/* ---------- Service record (shared with the Cockpit widget: static/service-record.js) ---------- */
 function renderSelftestLink() {
-    const base = selftestBase(), link = $('selftest-link');
+    const base = selftestBaseOf(S.stats), link = $('selftest-link');
     link.hidden = !base;
     if (base) {
         link.href = `${base}/`;
         link.title = `BlueOS Self Test is running; its runs are added here automatically (${S.stats.selftest.imported} so far)`;
     }
 }
-const DYMO = { 'Repair': '#b3261e', 'Replacement': '#1f4e8c', 'Maintenance': '#2e7d32', 'Inspection': '#8a6d00',
-               'Motor Sticking': '#c2410c', 'Thruster Sticking': '#c2410c', 'Add Device': '#5b2a86', 'Note': '#2b2b2b',
-               'Self Test': '#00796b' };
-const eventTypes = () => ['Repair', 'Replacement', 'Maintenance', 'Inspection', `${unitWord()} Sticking`, 'Note', 'Add Device'];
-const maintState = { editing: null, deleting: null, deleteStep: 1, type: 'All' };
-
-function labelMaker() {
-    const type = maintState.type;
-    const sticking = type.endsWith(' Sticking');
-    const motorPick = (['Repair', 'Replacement'].includes(type) || sticking) && S.thrusters && S.thrusters.thruster_count > 0;
-    const reset = ['Repair', 'Replacement'].includes(type);
-    const typesShown = [...new Set([...eventTypes(), ...S.maintenance.map(m => m.event_type)])];
-    $('label-maker').innerHTML = `
-        <div class="lm-row">
-            <select id="lm-type" title="Show records of this type; pick a type to add one">
-                <option value="All" ${type === 'All' ? 'selected' : ''}>All records</option>
-                ${typesShown.map(t => `<option ${t === type ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>
-            ${type === 'All' ? `<input type="text" placeholder="Pick a record type to add one" disabled style="flex: 3 1 220px">`
-            : type === 'Add Device' ? `
-                <input type="text" id="lm-name" placeholder="Device name">
-                <select id="lm-ch">${Array.from({ length: 16 }, (_, n) => `<option value="${n + 1}">CH ${n + 1}</option>`).join('')}</select>
-                <input type="number" id="lm-off" value="1100" min="800" max="2200" title="Run time counts while the output differs from this PWM (lights 1100, gripper 1500)">`
-            : `<input type="text" id="lm-details" placeholder="Details" style="flex: 3 1 220px">`}
-            <button class="chip-btn go print" id="lm-print" ${type === 'All' ? 'disabled' : ''}>Add record</button>
-        </div>
-        ${motorPick ? `<div class="lm-row">
-            ${S.thrusters.thrusters.map(t => `<label><input type="checkbox" class="lm-motor" value="${t.id}"> ${esc(thrusterName(t.id))}</label>`).join('')}
-            ${reset ? `<label><input type="checkbox" id="lm-reset"> Reset run hours for selected ${unitWord().toLowerCase()}s</label>` : ''}
-        </div>` : ''}`;
-    $('lm-type').onchange = e => { maintState.type = e.target.value; labelMaker(); renderMaint(); };
-    $('lm-print').onclick = async () => {
-        const body = { event_type: type, thruster_ids: [...document.querySelectorAll('.lm-motor:checked')].map(c => +c.value),
-                       reset_run_hours: !!($('lm-reset') && $('lm-reset').checked) };
-        if (type === 'Add Device') {
-            Object.assign(body, { device_name: $('lm-name').value.trim(), device_channel: +$('lm-ch').value, device_off_pwm: +$('lm-off').value });
-            if (!body.device_name) return toast('Enter a device name', true);
-        } else {
-            body.details = $('lm-details').value.trim();
-            if (!body.details) return toast('Enter the details', true);
-            if (sticking && !body.thruster_ids.length) return toast(`Pick the ${unitWord().toLowerCase()}(s)`, true);
-        }
-        try {
-            await api('maintenance', body);
-            toast('Record added');
-            labelMaker();
-            loadMaintenance(); loadSlow();
-        } catch (e) { toast(e.message, true); }
-    };
-}
-function linkLogs(html) {
-    // Imported Self Test records name their log; link it to the Self Test extension when it's running
-    const base = selftestBase();
-    return base ? html.replace(/(selftest_[A-Za-z0-9_-]+\.log)/g, `<a href="${base}/api/logs/$1" target="_blank" rel="noopener" style="color: inherit">$1</a>`) : html;
-}
-function renderMaint() {
-    const records = [...S.maintenance].sort((a, b) => parseTime(b.timestamp) - parseTime(a.timestamp));
-    const shown = records.filter(m => maintState.type === 'All' || m.event_type === maintState.type);
-    if (!shown.length) {
-        $('maint').innerHTML = `<div class="empty">${maintState.type === 'All' ? 'No service records yet.' : `No ${esc(maintState.type)} records yet.`}</div>`;
-        return;
-    }
-    $('maint').innerHTML = shown.map(m => {
-        const d = parseTime(m.timestamp), ts = esc(m.timestamp);
-        const when = maintState.editing === m.timestamp
-            ? `<input type="datetime-local" id="edit-when" value="${new Date(d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16)}">`
-            : `<div class="when" title="${esc(d.toLocaleString())}">${d.toLocaleDateString(undefined, { year: '2-digit', month: 'short', day: '2-digit' }).toUpperCase()}</div>`;
-        let acts;
-        if (maintState.editing === m.timestamp) {
-            acts = `<button class="chip-btn go" data-act="save" data-ts="${ts}" title="Save">✓</button><button class="chip-btn" data-act="cancel" title="Cancel">✕</button>`;
-        } else if (maintState.deleting === m.timestamp) {
-            acts = `<span class="confirm">${maintState.deleteStep === 1 ? 'Delete this record?' : 'Permanently delete?'}
-                    <button class="chip-btn stop" data-act="confirm" data-ts="${ts}">${maintState.deleteStep === 1 ? 'Yes' : 'Delete'}</button>
-                    <button class="chip-btn" data-act="cancel">No</button></span>`;
-        } else {
-            acts = `<button class="chip-btn" data-act="edit" data-ts="${ts}" title="Edit date and time">✎</button><button class="chip-btn" data-act="delete" data-ts="${ts}" title="Delete">🗑</button>`;
-        }
-        const motors = (m.thruster_ids || []).map(thrusterName).join(', ');
-        const tag = motors ? ` <span class="tag">[${esc(motors)}${m.reset_run_hours ? ' · run hours reset' : ''}]</span>` : '';
-        return `<div class="mrow">${when}<div><span class="dymo" style="background:${DYMO[m.event_type] || '#2b2b2b'}">${esc(m.event_type)}</span></div>
-                <div class="details">${linkLogs(esc(m.details))}${tag}</div><div class="acts">${acts}</div></div>`;
-    }).join('');
-    $('maint').querySelectorAll('button[data-act]').forEach(b => b.onclick = async () => {
-        const ts = b.dataset.ts;
-        try {
-            switch (b.dataset.act) {
-                case 'edit': Object.assign(maintState, { editing: ts, deleting: null }); break;
-                case 'save': {
-                    const value = $('edit-when').value;
-                    if (!value) return toast('Pick a date and time', true);
-                    await api('maintenance/update', { original_timestamp: ts, new_timestamp: new Date(value).toISOString() });
-                    maintState.editing = null; toast('Record updated'); await loadMaintenance(); return;
-                }
-                case 'delete': Object.assign(maintState, { deleting: ts, deleteStep: 1, editing: null }); break;
-                case 'confirm':
-                    if (maintState.deleteStep === 1) { maintState.deleteStep = 2; break; }
-                    await api('maintenance/delete', { timestamp: ts });
-                    maintState.deleting = null; toast('Record deleted'); await loadMaintenance(); return;
-                default: Object.assign(maintState, { editing: null, deleting: null });
-            }
-        } catch (e) { toast(e.message, true); }
-        renderMaint();
-    });
-}
+const serviceRecord = createServiceRecord({
+    formEl: $('label-maker'), listEl: $('maint'), editable: true,
+    getRecords: () => S.maintenance, getThrusters: () => S.thrusters, getStats: () => S.stats,
+    reload: () => loadMaintenance(), onAdded: () => loadSlow(),
+});
 
 /* ---------- Loading and polling ---------- */
 let statsFailed = false;
 async function loadStats() {
     try {
-        const hadSelftest = selftestBase();
+        const hadSelftest = selftestBaseOf(S.stats);
         S.stats = (await api('stats')).data;
         statsFailed = false;
         renderStats();
         renderSelftestLink();
-        if (selftestBase() !== hadSelftest) renderMaint();
+        if (selftestBaseOf(S.stats) !== hadSelftest) serviceRecord.renderList();
     } catch (e) {
         if (!statsFailed) toast('Odometer extension unreachable', true);
         statsFailed = true;
@@ -1210,7 +1027,7 @@ async function loadSlow() {
 }
 async function loadMaintenance() {
     try { S.maintenance = (await api('maintenance')).data; } catch (e) { console.warn('Service record:', e); }
-    labelMaker(); renderMaint();
+    serviceRecord.render();
 }
 async function loadVehicleName() {
     for (const path of ['blueos_vehicle_name', 'vehicle']) {
